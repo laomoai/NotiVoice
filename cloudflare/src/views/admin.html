@@ -57,6 +57,10 @@
   .rst.recv{color:var(--read)} .rst.play{color:var(--ok)}
   .tools{display:none;border-top:1px solid var(--border);margin-top:16px;padding-top:16px}
   .tools.show{display:block}
+  .apitok{margin:12px 0 8px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg)}
+  .apitok-h{font-size:13px;font-weight:600;color:var(--text);margin-bottom:8px}
+  .apitok-h .hint{font-weight:400;color:var(--muted);margin-left:6px}
+  #apitoken{width:100%;flex:1;min-width:220px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
   pre#cmd{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);border:1px solid var(--border);padding:14px;border-radius:10px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:8px 0}
   code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   .clear-row{display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap}
@@ -121,8 +125,15 @@
         </label>
         <button id="copy" class="mini">复制测试命令</button>
       </div>
+      <div class="apitok">
+        <div class="apitok-h">API Token（推送用）<span class="hint">与上方登录的 ADMIN_TOKEN 不同，业务接口只认这个</span></div>
+        <div class="row" style="margin:0">
+          <input id="apitoken" type="password" placeholder="粘贴 API_TOKEN" autocomplete="off" autocapitalize="off" spellcheck="false" />
+          <button id="toggleapi" class="mini" type="button">显示</button>
+        </div>
+      </div>
       <pre id="cmd"></pre>
-      <p class="tip">下方命令含明文 Token，仅供本地测试，勿外发。</p>
+      <p class="tip">上方命令用 <b>API_TOKEN</b> 调业务接口（推送 / 拉取 / 回执）；后台登录与清空消息用 <b>ADMIN_TOKEN</b>，两者互不通用。命令含明文 Token，仅供本地测试，勿外发。</p>
 
       <div class="clear-row">
         <button id="clear" class="danger mini">清空全部消息</button>
@@ -150,18 +161,28 @@ const API_BASE = isLocal ? 'https://notivoice.laomo.app' : '';
 const CMD_BASE = isLocal ? 'https://notivoice.laomo.app' : location.origin;
 const ti=document.querySelector('#token'),st=document.querySelector('#status'),ls=document.querySelector('#list'),tools=document.querySelector('#tools');
 const q=String.fromCharCode(39),cmd=document.querySelector('#cmd'),copy=document.querySelector('#copy');
-let verified=false;
+const apiIn=document.querySelector('#apitoken'),toggleApi=document.querySelector('#toggleapi');
+let verified=false,cmdReady=false;
 try{ti.value=localStorage.getItem('nv_admin_token')||''}catch(e){}
-function hideTools(){verified=false;cmd.textContent='';copy.textContent='复制测试命令';tools.classList.remove('show');document.querySelector('#audit').classList.remove('show')}
+try{apiIn.value=localStorage.getItem('nv_api_token')||''}catch(e){}
+function hideTools(){verified=false;cmdReady=false;cmd.textContent='';copy.textContent='复制测试命令';tools.classList.remove('show');document.querySelector('#audit').classList.remove('show')}
+// 测试命令必须用 API_TOKEN（业务接口），绝不能用后台登录的 ADMIN_TOKEN
 function buildCmd(){
- if(!verified)return;
- const slot=document.querySelector('#slot').value,tok=ti.value.trim();
- if(!tok){hideTools();return}
+ if(!verified){cmdReady=false;return}
+ const slot=document.querySelector('#slot').value,tok=apiIn.value.trim();
+ if(!tok){
+  cmdReady=false;
+  cmd.textContent='请先在上方填入 API Token（推送用），命令会自动生成。\n提示：推送 / 拉取 / 回执只认 API_TOKEN；ADMIN_TOKEN 调业务接口会返回 401。';
+  return;
+ }
+ cmdReady=true;
  cmd.textContent='curl -X POST '+q+CMD_BASE+'/api/notifications'+q+' -H '+q+'Content-Type: application/json'+q+' -H '+q+'Authorization: Bearer '+tok+q+' -d '+q+'{"text":"测试消息：会议将在 10 分钟后开始，请做好准备","voice":'+slot+'}'+q;
 }
 ti.addEventListener('input',()=>{try{localStorage.setItem('nv_admin_token',ti.value.trim())}catch(e){}hideTools()});
+apiIn.addEventListener('input',()=>{try{localStorage.setItem('nv_api_token',apiIn.value.trim())}catch(e){}buildCmd()});
+toggleApi.onclick=()=>{const on=apiIn.type==='password';apiIn.type=on?'text':'password';toggleApi.textContent=on?'隐藏':'显示'};
 document.querySelector('#slot').onchange=buildCmd;
-copy.onclick=async()=>{if(!verified||!cmd.textContent)return;try{await navigator.clipboard.writeText(cmd.textContent);copy.textContent='已复制 ✓'}catch(e){copy.textContent='请手动复制'}};
+copy.onclick=async()=>{if(!verified||!cmdReady)return;try{await navigator.clipboard.writeText(cmd.textContent);copy.textContent='已复制 ✓'}catch(e){copy.textContent='请手动复制'}};
 function fmt(s){return s?String(s).replace('T',' ').replace('Z','').slice(0,19):''}
 function shortId(s){return s?s.slice(0,8):''}
 // 按设备回执判定单条消息状态：任一设备 played → 已播报；否则任一设备 received → 已送达；否则未送达

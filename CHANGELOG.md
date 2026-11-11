@@ -28,6 +28,7 @@
 - 登录改用 `ADMIN_TOKEN`（填 `API_TOKEN` 明确提示被拒）。
 - 每条消息展示**设备级回执**（设备短 ID、received/played、时间戳）；状态判定改为「任一设备 played / received / 无回执」。
 - 新增**操作审计日志**区块；清空操作二次确认文案升级。
+- **修复**：后台「复制测试命令」原先用登录的 `ADMIN_TOKEN` 拼 curl，打业务接口必然 401。现新增独立「API Token（推送用）」输入框（独立 `localStorage: nv_api_token`，带显示/隐藏切换），curl 只用它；未填时给出明确提示而非生成错误命令。
 
 ### 测试与验证
 
