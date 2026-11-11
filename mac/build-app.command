@@ -13,8 +13,10 @@ if ! swift build -c release >/tmp/notivoice-build.log 2>&1; then
 fi
 APP="$PWD/dist/NotiVoice.app"
 REPO="$PWD/.."
-# 版本号唯一来源：升级只改 APP_VERSION；关于页 / Finder 都从 Info.plist 读，禁止在 UI 里写死
-APP_VERSION="1.1.2"
+# 版本号唯一来源：仓库根目录 VERSION 文件；升级只改那一处，关于页 / Finder 都从 Info.plist 读
+if [ ! -f "$REPO/VERSION" ]; then echo "缺少 $REPO/VERSION（全仓唯一版本源）"; exit 1; fi
+APP_VERSION="$(tr -d '[:space:]' < "$REPO/VERSION")"
+if ! printf '%s' "$APP_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then echo "VERSION 格式不合法：$APP_VERSION（应为 x.y.z）"; exit 1; fi
 BUILD_NUMBER="$(date -u +%Y%m%d%H%M)"
 GIT_COMMIT="$(git -C "$REPO" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME="$(date '+%Y-%m-%d %H:%M:%S %z')"

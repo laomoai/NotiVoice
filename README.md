@@ -1,5 +1,7 @@
 # Noti Voice
 
+> 当前版本：**V1.1.2**（唯一版本源：根目录 `VERSION` 文件）。改版本号必须同步全部文档与页面，并执行 `python3 scripts/check-version.py`；见下方「版本发布规则」。
+
 macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意系统的文本通知（交易提醒、监控告警、定时播报等）通过简单的 HTTP 接口推送到 Mac，由菜单栏 App 自动朗读出来。后端无服务器、零运维；客户端纯 SwiftUI，自托管可控。
 
 - 后端：Cloudflare Workers + D1（SQLite），**双 Token 鉴权**（`API_TOKEN` 业务接口 / `ADMIN_TOKEN` 后台接口，互相拒绝）。
@@ -20,12 +22,19 @@ macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意�
 - **可选运行时间窗口**：默认 `08:30–23:00`，关闭则全天运行；窗口外不拉取，恢复后补拉。
 - **推送体积限制**：每条消息 `text` ≤ **1000 字符**，请求体 ≤ **8 KB**（否则 `400 invalid_text` / `413 payload_too_large`）。
 
-## 客户端版本与构建标识（约定）
+## 版本发布规则（全局约定：改版本号必须全量同步）
 
-- 版本号唯一来源是 `mac/build-app.command` 顶部的 `APP_VERSION`；升级版本**只改这一处**，不要在 UI 文案里写死版本。
-- 打包时自动写入 `Info.plist`：`CFBundleShortVersionString`（市场版本）、`CFBundleVersion`（UTC 时间戳 build）、`NVGitCommit`（构建时 commit）、`NVBuildTime`、`NVBuildVariant`（release / local）、`NVGitDirty`（源码有未提交改动时为 `yes`）。
-- **设置 → 关于** 页动态显示 `V版本 · build · 标识 · 渠道 · 构建时间`，并提供「复制版本信息」按钮；排查「实际跑的是哪版」一律以该页为准。
-- 出包：`bash mac/build-app.command --no-open`（只打包不启动）；不带参数会打包后自动打开 App，`--local` 生成紫色 LOCAL 角标的本地版。
+**唯一版本源**：仓库根目录 `VERSION`（如 `1.1.2`）。升版本时按下面顺序执行，缺一不可：
+
+1. **只改 `VERSION` 一处**。禁止在 UI、HTML 页脚、文档里写死精确版本号（`V1.1` 这类里程碑标记可保留）。
+2. **自动注入**（无需手改）：
+   - `mac/build-app.command` 读 `VERSION` → 写入 `Info.plist`（`CFBundleShortVersionString`、`CFBundleVersion` UTC 时间戳、`NVGitCommit`、`NVBuildTime`、`NVBuildVariant`、`NVGitDirty`）；「设置 → 关于」页动态显示 `V版本 · build · 标识 · 渠道 · 构建时间`，带「复制版本信息」按钮。
+   - `cloudflare/build.mjs` 读 `VERSION` → 把页面里的 `{{APP_VERSION}}` 替换成当前版本；**新增页面必须带该占位符**，否则构建直接失败。
+3. **手工同步**（校验脚本会卡住漏改）：`README.md` 头部「当前版本」、`docs/API.md` / `docs/ARCHITECTURE.md` 标题、`docs/TESTING.md` 首行「适用版本」、`CHANGELOG.md` 新增 `## Vx.y.z（日期）` 条目（历史条目保留）、源码/脚本头部的精确版本注释、所有页面可见版本。
+4. **重新构建并部署**：`bash mac/build-app.command --no-open` → `cd cloudflare && npm run build && npm run deploy` → `wrangler secret list` 核对 secrets 未被部署覆盖。
+5. **门禁**：`python3 scripts/check-version.py`。锚点不一致、页面残留旧精确版本、或 `dist/Info.plist` / `dist/worker.js` 与 `VERSION` 不符，一律非零退出，不得宣称发布完成。
+
+排查「实际跑的是哪版」一律以客户端「设置 → 关于」页为准；Finder 显示的是 `.app` 目录 mtime，构建脚本干净重建保证其更新。
 
 ## 项目结构
 

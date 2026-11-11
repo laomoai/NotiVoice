@@ -82,7 +82,7 @@ struct FishModelOption: Identifiable {
     @Published var ackPending = 0
     @Published var lastSync: Date?
     @Published var bootstrapped: Bool = false
-    // 启动自检状态机（V1.1.1）：状态灯/文案以真实检查结果为准，不再看 enabled 开关脸色
+    // 启动自检状态机（V1.1 里程碑引入）：状态灯/文案以真实检查结果为准，不再看 enabled 开关脸色
     @Published var health: Health = .checking
     @Published var storageFaultDetail = ""
     enum Health {

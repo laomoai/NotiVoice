@@ -7,8 +7,21 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const src = join(__dirname, 'src');
 
-const landing = readFileSync(join(src, 'views', 'landing.html'), 'utf8');
-const admin = readFileSync(join(src, 'views', 'admin.html'), 'utf8');
+// 全仓唯一版本源：根目录 VERSION。所有页面必须含 {{APP_VERSION}} 占位符，构建时统一注入
+const version = readFileSync(join(__dirname, '..', 'VERSION'), 'utf8').trim();
+if (!/^\d+\.\d+\.\d+$/.test(version)) {
+  console.error('✗ VERSION 格式不合法：' + version + '（应为 x.y.z）');
+  process.exit(1);
+}
+const injectVersion = (name, raw) => {
+  if (!raw.includes('{{APP_VERSION}}')) {
+    console.error(`✗ ${name}.html 缺少 {{APP_VERSION}} 占位符：版本一致性规则要求所有页面显示当前版本`);
+    process.exit(1);
+  }
+  return raw.replaceAll('{{APP_VERSION}}', version);
+};
+const landing = injectVersion('landing', readFileSync(join(src, 'views', 'landing.html'), 'utf8'));
+const admin = injectVersion('admin', readFileSync(join(src, 'views', 'admin.html'), 'utf8'));
 let worker = readFileSync(join(src, 'index.js'), 'utf8');
 
 // JSON.stringify 会转义 HTML 内的双引号/换行，注入为合法 JS 字符串字面量
@@ -24,4 +37,4 @@ if (worker.includes('__LANDING_HTML__') || worker.includes('__ADMIN_HTML__')) {
 const outDir = join(__dirname, 'dist');
 mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, 'worker.js'), worker);
-console.log('✓ build 完成 -> dist/worker.js  (landing ' + landing.length + 'B, admin ' + admin.length + 'B)');
+console.log(`✓ build 完成 -> dist/worker.js  (v${version}; landing ${landing.length}B, admin ${admin.length}B)`);

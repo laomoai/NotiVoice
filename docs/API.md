@@ -1,4 +1,4 @@
-# Noti Voice API V1.1
+# Noti Voice API（当前版本 V1.1.2）
 
 > **接口根地址（Base URL）**：`https://notivoice.laomo.app`。下文所有 `/api/...` 路径均为相对该根地址，实际请求需拼接完整 URL，例如 `https://notivoice.laomo.app/api/notifications`。切勿只写 `/api/notifications`（curl 会报 `No host part in the URL`）。
 

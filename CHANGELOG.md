@@ -86,6 +86,13 @@
 - Worker 内存 Map 限流跨实例不共享（P2）。
 - 回滚方案：Worker 可用 Cloudflare Versions 回滚到 `479c6c8f`；D1 侧 004 仅新增触发器，`DROP TRIGGER IF EXISTS trg_ack_events_payload_conflict` 即可退回（旧代码不依赖它，但会退回「先查后插」竞态）。
 
+### 版本一致性规则落地（2026-11-12）
+
+- 新增根目录 `VERSION` 作为全仓唯一版本源；`mac/build-app.command` 与 `cloudflare/build.mjs` 均从它读取，页面强制使用 `{{APP_VERSION}}` 占位符（缺失即构建失败）。
+- 新增 `scripts/check-version.py` 门禁：校验 README / API / ARCHITECTURE / TESTING / CHANGELOG 锚点、页面占位符、全仓旧精确版本残留、客户端 `Info.plist` 与 Worker 产物版本；非零退出即禁止宣称发布完成。
+- 修正既有不一致：落地页页脚 `v1.1.1`、后台页页脚 `v1.1` 统一为当前版本；文档头部补「当前版本 V1.1.2」声明；`App.swift` 历史注释收敛为里程碑标记。
+- 生产 Worker 已按新构建重新部署（仅页面版本文案变化，接口与 secrets 不变）；客户端重新出包后覆盖安装才能看到新构建标识。
+
 ## V1.1.1（2026-11-11）
 
 ### 客户端（macOS）
