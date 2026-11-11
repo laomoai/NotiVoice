@@ -82,9 +82,37 @@ struct FishModelOption: Identifiable {
     @Published var ackPending = 0
     @Published var lastSync: Date?
     @Published var bootstrapped: Bool = false
+    // 启动自检状态机（V1.1.1）：状态灯/文案以真实检查结果为准，不再看 enabled 开关脸色
+    @Published var health: Health = .checking
+    enum Health {
+        case checking, paused, offHours, unconfigured, invalidToken, unreachable, dbFallback, playing, ok
+    }
+    var statusDot: Color {
+        switch health {
+        case .ok, .playing: return .green
+        case .paused, .offHours: return .gray
+        case .checking: return .yellow
+        case .unconfigured, .dbFallback: return .orange
+        case .invalidToken, .unreachable: return .red
+        }
+    }
+    var statusLine: String {
+        switch health {
+        case .checking: return "正在自检…"
+        case .paused: return "语音通知助手 · 已暂停"
+        case .offHours: return "语音通知助手 · 不在播报时间段"
+        case .unconfigured: return "语音通知助手 · 待配置（未填 API Token 或服务器地址无效）"
+        case .invalidToken: return "语音通知助手 · API Token 无效"
+        case .unreachable: return "语音通知助手 · 无法连接服务器"
+        case .dbFallback: return "语音通知助手 · 本地库降级运行（数据可能不持久）"
+        case .playing: return "语音通知助手 · 播报中"
+        case .ok: return "语音通知助手 · 运行中 · 已连接"
+        }
+    }
 
     private let db: Persistence
     private let deviceId: String
+    private var dbFellBack = false
     private var timer: Timer?
     private var ackTimer: Timer?
     private var polling = false
@@ -109,8 +137,9 @@ struct FishModelOption: Identifiable {
         try? FileManager.default.createDirectory(at:cacheDir,withIntermediateDirectories:true)
         let persistence: Persistence
         do { persistence = try Persistence(path: dbURL.path) }
-        catch { persistence = try! Persistence(path: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("notivoice-fallback.sqlite").path) }
+        catch { dbFellBack = true; persistence = try! Persistence(path: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("notivoice-fallback.sqlite").path) }
         db = persistence
+        if dbFellBack { health = .dbFallback }
         deviceId = db.deviceId
         bootstrapped = (db.getState("bootstrapped") == "1")
         // 旧版 apiToken 从 UserDefaults 迁移到 Keychain（一次性）
@@ -236,7 +265,7 @@ struct FishModelOption: Identifiable {
         Task { await flushAcks() }
     }
 
-    func toggle() {enabled.toggle();UserDefaults.standard.set(enabled,forKey:"enabled");if enabled {Task {await poll()}} else {status="已暂停"}}
+    func toggle() {enabled.toggle();UserDefaults.standard.set(enabled,forKey:"enabled");if enabled {health = .checking;Task {await poll()}} else {health = .paused;status="已暂停"}}
 
     private func inHours() -> Bool {
         guard scheduleOn else {return true}
@@ -249,10 +278,11 @@ struct FishModelOption: Identifiable {
 
     // MARK: - 拉取（与本地落库同一事务；GET 不写服务端 fetched_at）
     func poll() async {
-        guard !polling else{return};guard enabled else{status="已暂停";return}
-        guard inHours() else{status="不在播报时间内";return}
-        guard !apiToken.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else{status="请先在通用设置中填写 API Token";return}
-        guard let base=normalizedBase(), var components=URLComponents(string:base), components.scheme=="https" else {status="服务器地址无效，须为 HTTPS 域名（如 https://notivoice.laomo.app）";return}
+        guard !polling else{return}
+        if !enabled {health = .paused;status="已暂停";return}
+        if !inHours() {health = .offHours;status="不在播报时间内";return}
+        if apiToken.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {health = .unconfigured;status="请先在通用设置中填写 API Token";return}
+        guard let base = normalizedBase(), var components = URLComponents(string: base), components.scheme == "https" else { health = .unconfigured; status = "服务器地址无效，须为 HTTPS 域名（如 https://notivoice.laomo.app）"; return }
         components.path="/api/notifications"
         polling=true;defer{polling=false}
         do {
@@ -265,7 +295,7 @@ struct FishModelOption: Identifiable {
                 let (data,response)=try await URLSession.shared.data(for:req)
                 let code=(response as? HTTPURLResponse)?.statusCode ?? 0
                 guard code==200 else {
-                    if code==401 {status="API Token 无效（HTTP 401），请在通用设置中更新"}
+                    if code == 401 { health = .invalidToken; status = "API Token 无效（HTTP 401），请在通用设置中更新" }
                     throw URLError(.badServerResponse)
                 }
                 let feed=try JSONDecoder().decode(Feed.self,from:data)
@@ -290,7 +320,12 @@ struct FishModelOption: Identifiable {
             }
             if bootstrapped { Task { await drain() }; Task { await flushAcks() } }
             await updateReliability()
-        }catch{if !status.hasPrefix("API Token 无效") {status="连接失败：\(error.localizedDescription)"}}
+            if health != .dbFallback { health = .ok }
+            if health != .playing { status = queuedCount > 0 ? "已连接 · 待播 \(queuedCount) 条" : "已连接 · 暂无待播消息" }
+        }catch{
+            if health != .invalidToken { health = dbFellBack ? .dbFallback : .unreachable }
+            if !status.hasPrefix("API Token 无效") {status="连接失败：\(error.localizedDescription)"}
+        }
     }
 
     // MARK: - 自动播放（串行调度器；失败指数退避不丢弃；超阈值转 needs_attention）
@@ -300,6 +335,7 @@ struct FishModelOption: Identifiable {
             guard let job = db.dueJobs().first else {break}
             let slot=min(max(job.voiceSlot,1),3)
             db.markPlaying(job.messageId)
+            health = .playing
             status="正在播报：\(job.text.prefix(20))"
             let ok=await AudioCoordinator.shared.speak(text: job.text,slot:slot)
             if ok {
@@ -315,6 +351,7 @@ struct FishModelOption: Identifiable {
             }
         }
         await updateReliability()
+        if health == .playing { health = dbFellBack ? .dbFallback : .ok }
     }
 
     // MARK: - ACK Outbox 重试（T05：失败持续重试，不改变本地已播放事实）
@@ -442,7 +479,7 @@ struct MenuPanel:View {
         VStack(alignment:.leading,spacing:0) {
             HStack(spacing:10) {
                 Image(systemName:"waveform.circle.fill").font(.system(size:34)).foregroundStyle(.blue)
-                VStack(alignment:.leading,spacing:2){Text("Noti Voice").font(.headline);HStack(spacing:5){Circle().fill(store.enabled ? Color.green : .gray).frame(width:7,height:7);Text(store.enabled ? "语音通知助手 · 运行中" : "语音通知助手 · 已暂停").font(.caption).foregroundStyle(.secondary)}}
+                VStack(alignment:.leading,spacing:2){Text("Noti Voice").font(.headline);HStack(spacing:5){Circle().fill(store.statusDot).frame(width:7,height:7);Text(store.statusLine).font(.caption).foregroundStyle(.secondary)}}
                 Spacer()
                 Button {NSApp.activate(ignoringOtherApps:true);openWindow(id:"settings")} label:{Image(systemName:"gearshape").font(.system(size:18))}.buttonStyle(.plain).help("打开设置")
             }.padding(16)

@@ -1,5 +1,15 @@
 # 更新日志
 
+## V1.1.1（2026-11-11）
+
+### 客户端（macOS）
+
+- **启动自检状态机**：新增 `Health` 状态（checking / paused / offHours / unconfigured / invalidToken / unreachable / dbFallback / playing / ok）。启动即执行一次完整检查（配置 → 网络 → 鉴权），菜单栏状态灯与文案按真实结果渲染，不再以 enabled 开关冒充"运行中"。
+  - 未填 API Token → 橙灯「待配置」；Token 无效(401) → 红灯；连不上服务器 → 红灯；连接正常 → 绿灯「运行中 · 已连接」。
+  - 本地 SQLite 打开失败降级到临时目录库时 → 橙灯「本地库降级运行」。
+  - 播放中 → 「播报中」；暂停 / 不在播报时段 → 灰灯。
+- 构建修复：`health=.x`（`=` 紧跟点成员）触发 Swift 6 诊断，统一 `health = .x`。
+
 ## V1.1.0（2026-11-11）
 
 可靠消息播报大版本：双 Token 鉴权、设备级回执、本地 SQLite 持久化、At-Least-Once 投递、崩溃恢复。
