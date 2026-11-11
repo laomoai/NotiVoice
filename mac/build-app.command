@@ -16,7 +16,7 @@ REPO="$PWD/.."
 # 版本号唯一来源：仓库根目录 VERSION 文件；升级只改那一处，关于页 / Finder 都从 Info.plist 读
 if [ ! -f "$REPO/VERSION" ]; then echo "缺少 $REPO/VERSION（全仓唯一版本源）"; exit 1; fi
 APP_VERSION="$(tr -d '[:space:]' < "$REPO/VERSION")"
-if ! printf '%s' "$APP_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then echo "VERSION 格式不合法：$APP_VERSION（应为 x.y.z）"; exit 1; fi
+if ! printf '%s' "$APP_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then echo "VERSION 格式不合法：${APP_VERSION}（应为 x.y.z）"; exit 1; fi
 BUILD_NUMBER="$(date -u +%Y%m%d%H%M)"
 GIT_COMMIT="$(git -C "$REPO" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME="$(date '+%Y-%m-%d %H:%M:%S %z')"
@@ -69,6 +69,6 @@ chmod +x "$APP/Contents/MacOS/NotiVoice"
 # 干净重建会换 inode，Finder/IconServices 可能仍显示旧缓存（白色默认方块）；主动重新注册
 LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [ -x "$LSREG" ]; then "$LSREG" -force -R -f "$APP" >/dev/null 2>&1 || true; fi
-echo "构建完成：$APP（图标已注册刷新）"
+echo "构建完成：${APP}（图标已注册刷新）"
 echo "版本 V${APP_VERSION} · build ${BUILD_NUMBER} · 标识 ${GIT_COMMIT} · ${VARIANT} · ${BUILD_TIME} · dirty=${GIT_DIRTY}"
 if [ "$NO_OPEN" -eq 0 ]; then open "$APP"; fi
