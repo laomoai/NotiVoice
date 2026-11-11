@@ -1,0 +1,6 @@
+# 复制本文件为 .dev.vars 后填写，用于 `wrangler dev` 本地开发。
+# .dev.vars 已被 .gitignore 忽略，不会进入版本库。
+#
+# 本项目所有 /api/* 接口与后台登录共用同一个 Bearer Token。
+# 公开部署的 Token 为非机密值（与客户端默认值、文档一致），见 README「安全」章节。
+API_TOKEN=your_api_token_here

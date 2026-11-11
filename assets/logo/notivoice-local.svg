@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7164D9"/>
+      <stop offset="1" stop-color="#2B2A55"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFE484"/>
+      <stop offset="1" stop-color="#FFB020"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="202" fill="url(#bg)"/>
+  <g fill="url(#wave)">
+    <rect x="205" y="432" width="62" height="160" rx="31"/>
+    <rect x="297" y="382" width="62" height="260" rx="31"/>
+    <rect x="389" y="322" width="62" height="380" rx="31"/>
+    <rect x="481" y="272" width="62" height="480" rx="31"/>
+    <rect x="573" y="322" width="62" height="380" rx="31"/>
+    <rect x="665" y="382" width="62" height="260" rx="31"/>
+    <rect x="757" y="432" width="62" height="160" rx="31"/>
+  </g>
+  <circle cx="790" cy="238" r="60" fill="#30D158" stroke="#FFFFFF" stroke-width="16"/>
+  <rect x="332" y="800" width="360" height="104" rx="52" fill="#000000" fill-opacity="0.32"/>
+  <text x="512" y="872" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="60" font-weight="700" letter-spacing="6" fill="#FFFFFF">LOCAL</text>
+</svg>

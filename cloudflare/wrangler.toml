@@ -1,0 +1,16 @@
+name = "noti-voice"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+# 加 routes 后 wrangler 默认关闭 workers.dev，显式保留作为备用入口
+workers_dev = true
+# 自定义域名：laomo.app 的权威 NS 在 Cloudflare，zone 归属同一账号
+# wrangler deploy 会自动创建 DNS 记录与证书；workers.dev 地址仍可访问
+[[routes]]
+pattern = "notivoice.laomo.app"
+custom_domain = true
+
+# D1 'noti-voice' created 2026-11-11, region APAC.
+[[d1_databases]]
+binding = "DB"
+database_name = "noti-voice"
+database_id = "0fd35e88-53ca-401b-a0bf-e7b92e0aeb89"

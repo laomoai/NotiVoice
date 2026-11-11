@@ -1,0 +1,23 @@
+# 依赖
+node_modules/
+
+# Cloudflare 本地状态 / 构建缓存
+.wrangler/
+.cloudflare/
+
+# Swift 构建产物
+.build/
+mac/dist/
+*.app
+
+# 本地密钥（含真实 API_TOKEN，勿提交；用 .dev.vars.example 复制）
+cloudflare/.dev.vars
+
+# 系统 / 编辑器
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# WorkBuddy 工具内部状态（非项目源码，勿提交）
+.workbuddy/
