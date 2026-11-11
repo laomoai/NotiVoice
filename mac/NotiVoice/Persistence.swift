@@ -105,10 +105,16 @@ final class Persistence {
 
     private enum Bind { case text(String), int(Int64), dbl(Double), nul }
 
+    // P1-B：SQLITE_TRANSIENT 让 SQLite 立即复制字符串，不再依赖 (s as NSString).utf8String 临时指针的生命周期
+    private static let transientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
     private func bind(_ stmt: OpaquePointer, _ idx: Int32, _ b: Bind) throws {
         let rc: Int32
         switch b {
-        case .text(let s): rc = sqlite3_bind_text(stmt, idx, (s as NSString).utf8String, -1, nil)
+        case .text(let s):
+            rc = s.withCString { ptr in
+                sqlite3_bind_text(stmt, idx, ptr, -1, Self.transientDestructor)
+            }
         case .int(let v): rc = sqlite3_bind_int64(stmt, idx, v)
         case .dbl(let v): rc = sqlite3_bind_double(stmt, idx, v)
         case .nul: rc = sqlite3_bind_null(stmt, idx)
@@ -152,29 +158,53 @@ final class Persistence {
         guard try userVersionNow() == v else { throw NVError.verifyFailed("user_version 写入后回读不一致") }
     }
 
+    private func columnExistsNow(_ table: String, _ column: String) throws -> Bool {
+        let s = try prepareChecked("PRAGMA table_info(\(table));")
+        defer { sqlite3_finalize(s) }
+        while try stepRowChecked(s) {
+            if let c = sqlite3_column_text(s, 1), String(cString: c) == column { return true }
+        }
+        return false
+    }
+
     private func migrate() throws {
         let v = try userVersionNow()
-        guard v < 1 else { return }
-        // DDL 与版本号写入同事务：版本写不进去就整体回滚，绝不“假装迁移成功”。
+        guard v < 2 else { return }
+        if v == 0 {
+            // DDL 与版本号写入同事务：版本写不进去就整体回滚，绝不“假装迁移成功”。
+            // 新库一步到 v2：ack_outbox 直接带隔离列（P1-A：409/404 异常回执落库隔离）。
+            try transaction { _ in
+                try execNow("""
+                CREATE TABLE IF NOT EXISTS app_state(key TEXT PRIMARY KEY, value TEXT);
+                CREATE TABLE IF NOT EXISTS messages(
+                    message_id TEXT PRIMARY KEY, seq INTEGER UNIQUE, title TEXT, content TEXT,
+                    priority TEXT, voice_slot INTEGER, created_at TEXT, received_at TEXT);
+                CREATE TABLE IF NOT EXISTS playback_jobs(
+                    message_id TEXT PRIMARY KEY, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                    next_retry_at REAL, last_error TEXT, started_at TEXT, completed_at TEXT,
+                    FOREIGN KEY(message_id) REFERENCES messages(message_id));
+                CREATE TABLE IF NOT EXISTS ack_outbox(
+                    event_id TEXT PRIMARY KEY, message_id TEXT NOT NULL, device_id TEXT NOT NULL, status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0, next_retry_at REAL, delivered_at TEXT,
+                    quarantined_at TEXT, quarantine_reason TEXT);
+                CREATE TABLE IF NOT EXISTS playback_history(
+                    id TEXT PRIMARY KEY, message_id TEXT, action TEXT, engine TEXT, result TEXT, text TEXT, occurred_at REAL);
+                CREATE INDEX IF NOT EXISTS idx_jobs_state ON playback_jobs(state, next_retry_at);
+                CREATE INDEX IF NOT EXISTS idx_ack ON ack_outbox(delivered_at, next_retry_at);
+                """)
+                try setUserVersionNow(2)
+            }
+            return
+        }
+        // v == 1：老库补齐隔离列，条件 ALTER 保证重复执行/半迁移状态也安全
         try transaction { _ in
-            try execNow("""
-            CREATE TABLE IF NOT EXISTS app_state(key TEXT PRIMARY KEY, value TEXT);
-            CREATE TABLE IF NOT EXISTS messages(
-                message_id TEXT PRIMARY KEY, seq INTEGER UNIQUE, title TEXT, content TEXT,
-                priority TEXT, voice_slot INTEGER, created_at TEXT, received_at TEXT);
-            CREATE TABLE IF NOT EXISTS playback_jobs(
-                message_id TEXT PRIMARY KEY, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-                next_retry_at REAL, last_error TEXT, started_at TEXT, completed_at TEXT,
-                FOREIGN KEY(message_id) REFERENCES messages(message_id));
-            CREATE TABLE IF NOT EXISTS ack_outbox(
-                event_id TEXT PRIMARY KEY, message_id TEXT NOT NULL, device_id TEXT NOT NULL, status TEXT NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0, next_retry_at REAL, delivered_at TEXT);
-            CREATE TABLE IF NOT EXISTS playback_history(
-                id TEXT PRIMARY KEY, message_id TEXT, action TEXT, engine TEXT, result TEXT, text TEXT, occurred_at REAL);
-            CREATE INDEX IF NOT EXISTS idx_jobs_state ON playback_jobs(state, next_retry_at);
-            CREATE INDEX IF NOT EXISTS idx_ack ON ack_outbox(delivered_at, next_retry_at);
-            """)
-            try setUserVersionNow(1)
+            if !(try columnExistsNow("ack_outbox", "quarantined_at")) {
+                try execNow("ALTER TABLE ack_outbox ADD COLUMN quarantined_at TEXT;")
+            }
+            if !(try columnExistsNow("ack_outbox", "quarantine_reason")) {
+                try execNow("ALTER TABLE ack_outbox ADD COLUMN quarantine_reason TEXT;")
+            }
+            try setUserVersionNow(2)
         }
     }
 
@@ -366,13 +396,14 @@ final class Persistence {
             }
             if state == "completed" {
                 // 幂等重入：不得产生第二个有效 played 事件
-                let e = try prepareChecked("SELECT event_id FROM ack_outbox WHERE message_id=? AND status='played' AND delivered_at IS NULL ORDER BY event_id LIMIT 1;")
+                // P2-C：查全部 played 事件（含已送达），否则已送达后重入会误判为「无事件」并新建第二条
+                let e = try prepareChecked("SELECT event_id FROM ack_outbox WHERE message_id=? AND status='played' ORDER BY event_id LIMIT 1;")
                 defer { sqlite3_finalize(e) }
                 try bind(e, 1, .text(messageId))
                 if try stepRowChecked(e), let evC = sqlite3_column_text(e, 0) {
                     return String(cString: evC)
                 }
-                // 自愈：completed 却没有待发 played 回执（旧版本数据），补建
+                // 自愈：completed 却完全没有 played 回执（旧版本数据），补建
             }
             let u = try prepareChecked("UPDATE playback_jobs SET state='completed', completed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), next_retry_at=NULL, started_at=NULL WHERE message_id=?;")
             defer { sqlite3_finalize(u) }
@@ -439,7 +470,8 @@ final class Persistence {
     // MARK: - ACK Outbox 处理（T05：失败持续重试，不改变本地已播放事实）
     func undeliveredAcks() throws -> [AckRow] {
         try queue.sync {
-            let stmt = try prepareChecked("SELECT event_id,message_id,device_id,status FROM ack_outbox WHERE delivered_at IS NULL;")
+            // P1-A：被隔离的异常回执（409/404）不参与自动重试，等待人工检查
+            let stmt = try prepareChecked("SELECT event_id,message_id,device_id,status FROM ack_outbox WHERE delivered_at IS NULL AND quarantined_at IS NULL;")
             defer { sqlite3_finalize(stmt) }
             var out: [AckRow] = []
             while try stepRowChecked(stmt) {
@@ -475,10 +507,40 @@ final class Persistence {
 
     func pendingAckCount() throws -> Int {
         try queue.sync {
-            let stmt = try prepareChecked("SELECT COUNT(*) FROM ack_outbox WHERE delivered_at IS NULL;")
+            let stmt = try prepareChecked("SELECT COUNT(*) FROM ack_outbox WHERE delivered_at IS NULL AND quarantined_at IS NULL;")
             defer { sqlite3_finalize(stmt) }
             guard try stepRowChecked(stmt) else { return 0 }
             return Int(sqlite3_column_int(stmt, 0))
+        }
+    }
+
+    // MARK: - 异常回执隔离（P1-A：409/404 不能当成功，也不能无限重试）
+    func quarantineAck(_ eventId: String, reason: String) throws {
+        try queue.sync {
+            let stmt = try prepareChecked("UPDATE ack_outbox SET quarantined_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), quarantine_reason=? WHERE event_id=? AND delivered_at IS NULL;")
+            defer { sqlite3_finalize(stmt) }
+            try bind(stmt, 1, .text(reason))
+            try bind(stmt, 2, .text(eventId))
+            try stepDoneChecked(stmt)
+        }
+    }
+
+    func quarantinedAckCount() throws -> Int {
+        try queue.sync {
+            let stmt = try prepareChecked("SELECT COUNT(*) FROM ack_outbox WHERE delivered_at IS NULL AND quarantined_at IS NOT NULL;")
+            defer { sqlite3_finalize(stmt) }
+            guard try stepRowChecked(stmt) else { return 0 }
+            return Int(sqlite3_column_int(stmt, 0))
+        }
+    }
+
+    /// 人工检查后解除隔离，重新纳入自动重试（清空累计 attempts，避免立刻又被隔离）
+    func unquarantineAcks() throws -> Int {
+        try queue.sync {
+            let stmt = try prepareChecked("UPDATE ack_outbox SET quarantined_at=NULL, quarantine_reason=NULL, attempts=0, next_retry_at=NULL WHERE delivered_at IS NULL AND quarantined_at IS NOT NULL;")
+            defer { sqlite3_finalize(stmt) }
+            try stepDoneChecked(stmt)
+            return Int(sqlite3_changes(db))
         }
     }
 

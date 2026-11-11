@@ -1,4 +1,4 @@
-// NotiVoice V1.1.2 物理/引擎级故障注入（FIX-01 / FIX-03 验证）
+// NotiVoice V1.1 物理/引擎级故障注入（FIX-01 / FIX-03 验证）
 // 全部在临时目录用真实 SQLite 文件，不触碰用户真实数据库与 Keychain。
 // 覆盖：权限拒绝、库文件损坏、SQLITE_FULL（磁盘满等价）、COMMIT 阶段延迟约束失败、
 //       事务中途 ABORT 整批回滚、device_id 写入失败不得返回未持久化 ID。

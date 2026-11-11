@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# NotiVoice V1.1.2 真实远程 D1 故障注入演练
+# NotiVoice V1.1 真实远程 D1 故障注入演练
 # 目标：在真实 Cloudflare D1（非 miniflare 本地模拟）上验证 FIX-04 的 batch 原子性、
 #       幂等、409 冲突、状态单调与并发，并注入 batch 中途失败验证整批回滚。
 # 前提：一个隔离的临时 Worker（独立 workers.dev 子域）+ 隔离的临时 D1（已跑 schema.sql）。

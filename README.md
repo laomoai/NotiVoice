@@ -1,6 +1,6 @@
 # Noti Voice
 
-> 当前版本：**V1.1.2**（唯一版本源：根目录 `VERSION` 文件）。改版本号必须同步全部文档与页面，并执行 `python3 scripts/check-version.py`；见下方「版本发布规则」。
+> 当前版本：**V1.1.3**（唯一版本源：根目录 `VERSION` 文件）。改版本号必须同步全部文档与页面，并执行 `python3 scripts/check-version.py`；见下方「版本发布规则」。
 
 macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意系统的文本通知（交易提醒、监控告警、定时播报等）通过简单的 HTTP 接口推送到 Mac，由菜单栏 App 自动朗读出来。后端无服务器、零运维；客户端纯 SwiftUI，自托管可控。
 
@@ -24,7 +24,7 @@ macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意�
 
 ## 版本发布规则（全局约定：改版本号必须全量同步）
 
-**唯一版本源**：仓库根目录 `VERSION`（如 `1.1.2`）。升版本时按下面顺序执行，缺一不可：
+**唯一版本源**：仓库根目录 `VERSION`（如 `1.1.3`）。升版本时按下面顺序执行，缺一不可：
 
 1. **只改 `VERSION` 一处**。禁止在 UI、HTML 页脚、文档里写死精确版本号（`V1.1` 这类里程碑标记可保留）。
 2. **自动注入**（无需手改）：
@@ -64,7 +64,7 @@ noti-voice/
 │   │   ├── 001_play_status.sql
 │   │   ├── 002_voice_slot.sql
 │   │   ├── 003_message_fields.sql   # V1.1：新字段 + device_receipts/ack_events/admin_audit 表
-│   │   └── 004_ack_event_conflict_trigger.sql # V1.1.2：同 event_id 异载荷 → 409 的触发器
+│   │   └── 004_ack_event_conflict_trigger.sql # V1.1：同 event_id 异载荷 → 409 的触发器
 │   ├── package.json          # build / dev / deploy / db:* 脚本
 │   ├── .dev.vars.example     # 本地开发变量模板（复制为 .dev.vars，含双 Token）
 │   ├── .dev.vars             # 本地开发密钥（gitignore）
@@ -103,7 +103,7 @@ npm run db:remote
 npm run db:migrate                        # 001：fetched_at / fetch_count / played_at
 npm run db:migrate:voice                  # 002：voice_slot
 npx wrangler d1 execute noti-voice --remote --file=./migrations/003_message_fields.sql  # V1.1：新字段 + 回执/审计表
-npx wrangler d1 execute noti-voice --remote --file=./migrations/004_ack_event_conflict_trigger.sql  # V1.1.2：ACK 载荷冲突触发器（启用新 Worker 前必跑）
+npx wrangler d1 execute noti-voice --remote --file=./migrations/004_ack_event_conflict_trigger.sql  # V1.1：ACK 载荷冲突触发器（启用新 Worker 前必跑）
 # 双 Token（V1.1）：业务接口与后台互相隔离，用错一律 401
 npx wrangler secret put API_TOKEN         # 业务接口（提交 / 拉取 / 回执）
 npx wrangler secret put ADMIN_TOKEN       # 后台管理接口专用

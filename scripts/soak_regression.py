@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NotiVoice V1.1.2 断网恢复 soak 回归（Mac mini M4，真实本地 Worker + 本地 D1）。
+"""NotiVoice V1.1 断网恢复 soak 回归（Mac mini M4，真实本地 Worker + 本地 D1）。
 
 启动/停止本地 wrangler dev 制造真实服务中断；客户端侧用持久化 cursor + 待发队列 +
 稳定 event_id 模拟 NotiVoice 客户端协议。断言：中断期间的消息不丢、恢复后补拉补发、

@@ -1,5 +1,22 @@
 # 更新日志
 
+## V1.1.3（2026-11-12）
+
+增量静态审查（`a231652..d0a4107`）发现的 3 项 P1 + 1 项 P2 缺陷修复；不改 V1.1.2 架构与接口契约。
+
+| 项 | 修复 | 验证证据 |
+| --- | --- | --- |
+| P1-A 409/404 被当 ACK 成功 | `postReceipt` 只接受 2xx + `{"ok":true}`；409/404 落库隔离（`ack_outbox` 新增 `quarantined_at`/`quarantine_reason`，本地 `user_version=2`），不标记 delivered、不自动重试；菜单显示隔离条与「解除隔离并重试」 | `AckClassifier` 分类测试（200/409/404/500/超时/坏响应体）+ 隔离跨重启与恢复测试 |
+| P1-B SQLite 文本绑定生命周期 | `sqlite3_bind_text` 改 `withCString` + `SQLITE_TRANSIENT`，由 SQLite 立即复制 | 中文 / Emoji / 约 1 万字符 / 引号换行 + 100 次 statement 复用，逐字一致 |
+| P2-C completed 重入生成新事件 | 幂等查询改为查全部 played 事件（含已送达），重入返回原 `event_id` | 已送达后重入，全表仍只有 1 条 played 事件 |
+| P1-D storageFault 状态被覆盖 | `migrateHistoryJSON`/`loadHistoryFromDB` 改 `throws` 上抛；失败时 `db=nil`、停定时器；`startIfNeeded`/`resetTimer`/`flushAcks` 只在 `storageOK` 运行；`retryStorage` 全部成功才恢复 | 损坏库 + 故意缺历史表两个 VoiceStore 实例级故障注入用例 |
+
+- 新增 `mac/Tests/NotiVoiceTests/ReliabilityFixTests.swift`（7 例）；`swift test --disable-sandbox` **28/28，0 failures**（含原有 21 例）。测试进程不再调 `SMAppService`，耗时从 40s 降到 0.8s。
+- 本地库 `user_version` 1→2：新库建表即带隔离列；老库条件 `ALTER TABLE` 补齐，重复打开安全（已用例验证）。
+- 版本发布按全局规则全量同步：`VERSION=1.1.3`、页面 `{{APP_VERSION}}` 自动注入、README / API / ARCHITECTURE / TESTING / CHANGELOG 同步，并执行 `scripts/check-version.py` 门禁。
+- **未验证**：GUI 实机长时挂机；真实 Worker 对隔离回执的端到端 GUI 联调（本次仅 Swift 单测 + 分类纯函数，Worker 代码未改）；真实 D1 故障注入未在本次复跑，沿用 V1.1.2 的 19/19 证据。不得据此宣称完成长期无人值守验收。
+
+
 ## V1.1.2（2026-11-12）
 
 四项可靠性修复（基准 `a231652`，不改界面布局、不改双 Token 方案、不改公开 API 的成功语义）。

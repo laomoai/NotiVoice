@@ -5,6 +5,28 @@ import Security
 import ServiceManagement
 import CryptoKit
 
+// P1-A：回执结果分类。409/404 是协议异常，不是送达确认；只有 2xx + {"ok":true} 才算 delivered。
+enum AckOutcome: Equatable {
+    case delivered
+    case retry
+    case quarantine(String)
+}
+
+enum AckClassifier {
+    /// 纯函数，供 XCTest 覆盖 200/409/404/500/超时/坏响应体，不依赖网络
+    static func classify(statusCode: Int, body: Data?) -> AckOutcome {
+        if statusCode == 409 || statusCode == 404 {
+            let text = body.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            return .quarantine("HTTP \(statusCode)：\(String(text.prefix(200)))")
+        }
+        guard (200...299).contains(statusCode) else { return .retry }
+        guard let d = body,
+              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              j["ok"] as? Bool == true else { return .retry }
+        return .delivered
+    }
+}
+
 struct Notice: Codable, Identifiable, Hashable {
     let seq: Int
     let id: String
@@ -80,6 +102,7 @@ struct FishModelOption: Identifiable {
     @Published var queuedCount = 0
     @Published var attentionCount = 0
     @Published var ackPending = 0
+    @Published var ackQuarantined = 0   // P1-A：409/404 隔离回执，等待人工检查
     @Published var lastSync: Date?
     @Published var bootstrapped: Bool = false
     // 启动自检状态机（V1.1 里程碑引入）：状态灯/文案以真实检查结果为准，不再看 enabled 开关脸色
@@ -130,8 +153,9 @@ struct FishModelOption: Identifiable {
         return dir
     }
 
-    init() {
-        let dir = VoiceStore.appSupportDir()
+    /// sandboxRoot 仅供 XCTest 注入临时目录，避免测试触碰用户真实库 / Keychain / 音频缓存
+    init(sandboxRoot: URL? = nil) {
+        let dir = sandboxRoot ?? VoiceStore.appSupportDir()
         let dbURL = dir.appendingPathComponent("notivoice.sqlite")
         dbPath = dbURL.path
         cacheDir = dir.appendingPathComponent("audio-cache",isDirectory:true)
@@ -145,8 +169,8 @@ struct FishModelOption: Identifiable {
             db = p
             deviceId = try p.ensureDeviceId()
             bootstrapped = ((try p.getState("bootstrapped")) ?? "") == "1"
-            migrateHistoryJSON()
-            loadHistoryFromDB()
+            try migrateHistoryJSON()     // P1-D：失败必须上抛，不能只改状态后继续执行
+            try loadHistoryFromDB()
             try p.recoverInterrupted()   // 崩溃恢复：playing → queued（T04）
         } catch {
             db = nil; deviceId = nil
@@ -158,7 +182,8 @@ struct FishModelOption: Identifiable {
         }
         // 配置串行播放调度器
         configureCoordinator()
-        if #available(macOS 13.0, *) { launchAtLogin = SMAppService.mainApp.status == .enabled }
+        // 注入 sandboxRoot 的测试进程不触碰系统登录项（SMAppService 在非 .app bundle 会超时约 40s）
+        if sandboxRoot == nil, #available(macOS 13.0, *) { launchAtLogin = SMAppService.mainApp.status == .enabled }
         let savedModels = UserDefaults.standard.stringArray(forKey:"detectedModelIDs") ?? []
         detectedModels = FishModelOption.candidates.filter { savedModels.contains($0.id) }
         if !detectedModels.isEmpty { modelDetectStatus="以下是上次检测的缓存结果，点「检测可用模型」可用当前 Key 重新验证" }
@@ -200,42 +225,45 @@ struct FishModelOption: Identifiable {
             db = p
             deviceId = try p.ensureDeviceId()
             bootstrapped = ((try p.getState("bootstrapped")) ?? "") == "1"
-            loadHistoryFromDB()
+            try loadHistoryFromDB()
             try p.recoverInterrupted()
+            // P1-D：只有全部步骤成功才允许从故障态恢复并重建定时器
             storageFaultDetail = ""
             health = .checking
             status = "数据库已重新连接，恢复本地队列…"
+            resetTimer()
             Task { @MainActor in await self.updateReliability(); await self.poll() }
         } catch {
+            db = nil; deviceId = nil       // 不留半初始化状态，避免 flushAcks 继续发回执
+            timer?.invalidate(); timer = nil
+            ackTimer?.invalidate(); ackTimer = nil
             enterStorageFault("重新连接数据库失败", error)
         }
     }
 
-    private func migrateHistoryJSON() {
+    private func migrateHistoryJSON() throws {
         guard let db = db else { return }
         guard let data = try? Data(contentsOf:historyURL),
               let old = try? JSONDecoder().decode([HistoryItem].self,from:data), !old.isEmpty else { return }
         for h in old {
-            do { try db.insertHistory(id:h.id, messageId:h.id, action:"auto", engine:"migrated", result:h.result, text:h.text, at:h.timestamp.timeIntervalSince1970) }
-            catch { enterStorageFault("历史迁移写入失败", error); return }
+            // 写入失败直接上抛，由 init/retryStorage 统一进入 storageFault 并停机
+            try db.insertHistory(id:h.id, messageId:h.id, action:"auto", engine:"migrated", result:h.result, text:h.text, at:h.timestamp.timeIntervalSince1970)
         }
         try? FileManager.default.removeItem(at:historyURL)
     }
 
-    private func loadHistoryFromDB() {
+    private func loadHistoryFromDB() throws {
         guard let db = db else { return }
-        do {
-            let rows = try db.recentHistory(limit:500)
-            history = rows.compactMap { r -> HistoryItem? in
-                guard let id = r["id"] as? String, let text = r["text"] as? String,
-                      let res = r["result"] as? String, let ts = r["occurredAt"] as? TimeInterval else { return nil }
-                return HistoryItem(id:id, text:text, timestamp: Date(timeIntervalSince1970:ts), result:res, voiceSlot:defaultVoiceSlot)
-            }
-        } catch { enterStorageFault("历史读取失败", error) }
+        let rows = try db.recentHistory(limit:500)
+        history = rows.compactMap { r -> HistoryItem? in
+            guard let id = r["id"] as? String, let text = r["text"] as? String,
+                  let res = r["result"] as? String, let ts = r["occurredAt"] as? TimeInterval else { return nil }
+            return HistoryItem(id:id, text:text, timestamp: Date(timeIntervalSince1970:ts), result:res, voiceSlot:defaultVoiceSlot)
+        }
     }
 
     func startIfNeeded() {
-        guard timer == nil else { return }
+        guard storageOK, timer == nil else { return }   // P1-D：故障态不启动任何网络任务
         resetTimer()
     }
 
@@ -310,6 +338,12 @@ struct FishModelOption: Identifiable {
     }
 
     func resetTimer() {
+        // P1-D：存储故障时彻底停掉轮询/ACK 定时器与立即触发的任务
+        guard storageOK else {
+            timer?.invalidate(); timer = nil
+            ackTimer?.invalidate(); ackTimer = nil
+            return
+        }
         timer?.invalidate()
         timer=Timer.scheduledTimer(withTimeInterval:TimeInterval(max(3,interval)),repeats:true){[weak self] _ in Task { @MainActor in await self?.poll() }}
         Task { await poll() }
@@ -428,31 +462,42 @@ struct FishModelOption: Identifiable {
     // MARK: - ACK Outbox 重试（T05：失败持续重试，不改变本地已播放事实）
     func flushAcks() async {
         guard !flushing else {return};flushing=true;defer{flushing=false}
-        guard let db = db else { return }                          // FIX-03：存储故障期间不发 ACK
+        guard storageOK, let db = db else { return }                // P1-D：故障态不发 ACK
         let rows: [AckRow]
         do { rows = try db.undeliveredAcks() }
         catch { enterStorageFault("ACK Outbox 读取失败", error); return }
         for row in rows {
-            let ok=await postReceipt(row)
+            let outcome = await postReceipt(row)
             do {
-                if ok { try db.markAckDelivered(row.eventId) }
-                else { try db.bumpAckAttempt(row.eventId, nextRetryAt: Date().timeIntervalSince1970 + 15) }
+                switch outcome {
+                case .delivered:
+                    try db.markAckDelivered(row.eventId)
+                case .retry:
+                    try db.bumpAckAttempt(row.eventId, nextRetryAt: Date().timeIntervalSince1970 + 15)
+                case .quarantine(let reason):
+                    // P1-A：409/404 落库隔离，保留未送达状态，等待人工检查，绝不标记 delivered
+                    try db.quarantineAck(row.eventId, reason: reason)
+                }
             } catch { enterStorageFault("ACK 状态更新失败", error); return }
         }
         await updateReliability()
     }
 
-    private func postReceipt(_ row: AckRow) async -> Bool {
-        guard let base=normalizedBase(), var comps=URLComponents(string:base), comps.scheme=="https" else {return false}
+    private func postReceipt(_ row: AckRow) async -> AckOutcome {
+        guard let base=normalizedBase(), var comps=URLComponents(string:base), comps.scheme=="https" else {return .retry}
         comps.path="/api/notifications/ack"
-        guard let url=comps.url else {return false}
+        guard let url=comps.url else {return .retry}
         var req=URLRequest(url:url);req.httpMethod="POST";req.timeoutInterval=10
         req.setValue("application/json",forHTTPHeaderField:"Content-Type")
         req.setValue("Bearer \(apiToken.trimmingCharacters(in:.whitespacesAndNewlines))",forHTTPHeaderField:"Authorization")
         req.httpBody=try? JSONSerialization.data(withJSONObject:["device_id":row.deviceId,"message_id":row.messageId,"status":row.status,"event_id":row.eventId])
-        guard let (_,res)=try? await URLSession.shared.data(for:req) else {return false}
-        let code=(res as? HTTPURLResponse)?.statusCode ?? 0
-        return code==200 || code==409 || code==404   // 409/404：服务端已判定冲突或消息不存在，视为终态，不再重试
+        do {
+            let (data,res) = try await URLSession.shared.data(for:req)
+            let code = (res as? HTTPURLResponse)?.statusCode ?? 0
+            return AckClassifier.classify(statusCode: code, body: data)
+        } catch {
+            return .retry   // 超时 / 网络断开：保留在 Outbox 继续重试
+        }
     }
 
     func retryAttentionAll() {
@@ -463,13 +508,24 @@ struct FishModelOption: Identifiable {
         Task { await drain() }
     }
 
+    /// P1-A：人工检查后解除隔离并重发；隔离本身不会被自动重试吞掉
+    func unquarantineAcksUI() {
+        guard storageOK, let db = db else { return }
+        do {
+            let n = try db.unquarantineAcks()
+            status = "已解除 \(n) 条异常回执隔离，将重新发送"
+            Task { @MainActor in await self.flushAcks(); await self.updateReliability() }
+        } catch { enterStorageFault("解除回执隔离失败", error) }
+    }
+
     private func updateReliability() async {
         guard let db = db else { return }
         // UI 计数为展示性读取：失败保持上一拍数值（控制流读取已在 poll/drain/flushAcks 中严格校验）
         let q=(try? db.dueJobs().count) ?? queuedCount
         let a=(try? db.needAttentionJobs().count) ?? attentionCount
         let ack=(try? db.pendingAckCount()) ?? ackPending
-        queuedCount=q; attentionCount=a; ackPending=ack
+        let aq=(try? db.quarantinedAckCount()) ?? ackQuarantined
+        queuedCount=q; attentionCount=a; ackPending=ack; ackQuarantined=aq
     }
 
     // MARK: - 手动重播 / 测试语音（同样走串行调度器，T11 不互相抢占）
@@ -583,6 +639,15 @@ struct MenuPanel:View {
                     Text(store.storageFaultDetail).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
                     Button("重新连接数据库") { store.retryStorage() }.font(.caption).controlSize(.small)
                 }.padding(.horizontal,16).padding(.vertical,10).frame(maxWidth:.infinity,alignment:.leading)
+                Divider()
+            }
+            if store.ackQuarantined > 0 {
+                HStack(spacing:8) {
+                    Image(systemName:"exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                    Text("\(store.ackQuarantined) 条回执被隔离（409/404），未标记送达，需人工检查").font(.caption2).foregroundStyle(.orange)
+                    Spacer()
+                    Button("解除隔离并重试"){store.unquarantineAcksUI()}.font(.caption2).controlSize(.small)
+                }.padding(.horizontal,16).padding(.vertical,8)
                 Divider()
             }
             Divider()
