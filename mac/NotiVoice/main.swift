@@ -38,9 +38,21 @@ struct FishModelOption: Identifiable {
 }
 
 @MainActor final class VoiceStore: ObservableObject {
-    // 主入口：自定义域名 notivoice.laomo.app（workers.dev 作为备用，可在设置页改回）
-    @Published var endpoint = UserDefaults.standard.string(forKey:"endpoint") ?? "https://notivoice.laomo.app/api/notifications"
-    @Published var postEndpoint = UserDefaults.standard.string(forKey:"postEndpoint") ?? "https://notivoice.laomo.app/api/notifications"
+    // 仅配置服务器基地址（如 https://notivoice.laomo.app），接口路径由代码统一拼接：
+    // GET/POST 读取与提交用 /api/notifications，播报回执用 /api/notifications/ack
+    @Published var serverBase: String = {
+        if let saved = UserDefaults.standard.string(forKey:"serverBase"), !saved.isEmpty { return saved }
+        // 迁移旧版：从旧的 endpoint / postEndpoint 提取 host 作为基地址，并清理旧键
+        for key in ["endpoint","postEndpoint"] {
+            if let old = UserDefaults.standard.string(forKey:key),
+               let u = URL(string: old), let scheme = u.scheme, let host = u.host {
+                UserDefaults.standard.removeObject(forKey:"endpoint")
+                UserDefaults.standard.removeObject(forKey:"postEndpoint")
+                return "\(scheme)://\(host)"
+            }
+        }
+        return "https://notivoice.laomo.app"
+    }()
     // 所有 /api/* 共用的 Bearer Token（与 Worker 的 API_TOKEN secret 一致，非机密）
     @Published var apiToken = UserDefaults.standard.string(forKey:"apiToken") ?? "6c8db15bf637cd0815f6551a54d18178015395912666cdd8"
     // 默认选官方免费模型，避免误用付费模型产生账单
@@ -100,6 +112,13 @@ struct FishModelOption: Identifiable {
     private func cacheFile(text:String,model:String,voiceID:String)->URL {
         let digest=SHA256.hash(data:Data("\(model)|\(voiceID)|\(text)".utf8))
         return cacheDir.appendingPathComponent(digest.map{String(format:"%02x",$0)}.joined()+".mp3")
+    }
+    // 规范化基地址：自动补 https:// 前缀，仅接受 https + 合法 host
+    private func normalizedBase() -> String? {
+        let b = serverBase.trimmingCharacters(in:.whitespacesAndNewlines)
+        let full = (b.hasPrefix("http://") || b.hasPrefix("https://")) ? b : "https://"+b
+        guard let c = URLComponents(string:full), c.scheme == "https", c.host != nil else { return nil }
+        return full
     }
     func refreshCacheCount() {
         let files=(try? FileManager.default.contentsOfDirectory(at:cacheDir,includingPropertiesForKeys:nil,options:.skipsHiddenFiles)) ?? []
@@ -171,7 +190,7 @@ struct FishModelOption: Identifiable {
             : "检测到 \(available.count) 个可用模型，另 \(blocked) 个不可用；点击可填入，计费以官方账单为准"
     }
     func save() {
-        for (k,v) in ["endpoint":endpoint,"postEndpoint":postEndpoint,"apiToken":apiToken,"model":model,"voice":voice,"voice2":voice2,"voice3":voice3,"start":start,"end":end] {UserDefaults.standard.set(v,forKey:k)}
+        for (k,v) in ["serverBase":serverBase,"apiToken":apiToken,"model":model,"voice":voice,"voice2":voice2,"voice3":voice3,"start":start,"end":end] {UserDefaults.standard.set(v,forKey:k)}
         UserDefaults.standard.set(min(max(defaultVoiceSlot,1),3),forKey:"defaultVoiceSlot")
         UserDefaults.standard.set(max(3,interval),forKey:"interval")
         UserDefaults.standard.set(scheduleOn,forKey:"scheduleOn")
@@ -201,7 +220,8 @@ struct FishModelOption: Identifiable {
     func poll() async {
         guard !polling else{return};guard enabled else{status="已暂停";return}
         guard inHours() else{status="不在播报时间内";return}
-        guard var components=URLComponents(string:endpoint),components.scheme=="https" else {status="读取地址必须为 HTTPS";return}
+        guard let base=normalizedBase(), var components=URLComponents(string:base), components.scheme=="https" else {status="服务器地址无效，须为 HTTPS 域名（如 https://notivoice.laomo.app）";return}
+        components.path="/api/notifications"
         polling=true;defer{polling=false}
         var fetched=0
         do {
@@ -250,8 +270,8 @@ struct FishModelOption: Identifiable {
     }
     // 播报成功后把 seq 回执给 Worker，后台才能区分「已被取走」与「已播报」
     private func ack(_ seqs:[Int]) async {
-        guard var comps=URLComponents(string:endpoint),comps.scheme=="https" else{return}
-        comps.path=(comps.path as NSString).deletingLastPathComponent + "/ack"
+        guard let base=normalizedBase(), var comps=URLComponents(string:base), comps.scheme=="https" else{return}
+        comps.path="/api/notifications/ack"
         comps.queryItems=nil
         guard let url=comps.url else{return}
         var req=URLRequest(url:url);req.httpMethod="POST";req.timeoutInterval=10
@@ -410,8 +430,8 @@ struct SettingsWindow:View {
                 Text(["general":"通用设置","voice":"语音设置","schedule":"运行时间","about":"关于"][tab] ?? "设置").font(.title2).bold()
                 Divider()
                 if tab=="general" {
-                    VStack(alignment:.leading,spacing:7){Text("消息读取地址（GET）");TextField("https://notivoice.laomo.app/api/notifications",text:$store.endpoint).textFieldStyle(.roundedBorder)}
-                    VStack(alignment:.leading,spacing:7){Text("消息提交地址（仅用于发送测试）");TextField("https://notivoice.laomo.app/api/notifications",text:$store.postEndpoint).textFieldStyle(.roundedBorder)}
+                    VStack(alignment:.leading,spacing:7){Text("服务器地址");TextField("https://notivoice.laomo.app",text:$store.serverBase).textFieldStyle(.roundedBorder)}
+                    Text("接口路径由程序自动拼接（GET/POST 用 /api/notifications，回执用 /api/notifications/ack），只需填写域名。").font(.caption).foregroundStyle(.secondary)
                     VStack(alignment:.leading,spacing:7){Text("API Token（Bearer，读取 / 提交 / 回执共用）");TextField("输入 API Token",text:$store.apiToken).textFieldStyle(.roundedBorder)}
                     HStack {Text("轮询间隔");Spacer();Picker("",selection:$store.interval){ForEach([3,5,10,15,30,60],id:\.self){Text("\($0) 秒").tag($0)}}.frame(width:145)}
                     Toggle("开机自动启动",isOn:$store.launchAtLogin)

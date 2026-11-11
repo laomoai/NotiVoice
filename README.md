@@ -100,7 +100,7 @@ bash build-app.command --local    # 装入紫色带 LOCAL 角标的本地开发�
 
 | 分区 | 关键配置 |
 |---|---|
-| 通用设置 | 消息读取地址（GET）、消息提交地址（POST，仅测试用）、API Token（Bearer，读取/提交/回执共用） |
+| 通用设置 | 服务器地址（如 `https://notivoice.laomo.app`，接口路径自动拼接）、API Token（Bearer，读取/提交/回执共用） |
 | 语音设置 | Fish Audio API Key（存 Keychain）、模型（可「检测可用模型」）、音色 `#1/#2/#3` 的 `reference_id`、默认音色、语音缓存 `N/100`、音量 |
 | 运行时间 | 可选开关，默认 `08:30–23:00`，支持跨午夜，窗口外不拉取 |
 | 关于 | 版本与说明 |
