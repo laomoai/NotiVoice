@@ -383,7 +383,7 @@ enum Keychain {
 struct MenuPanel:View {
     @ObservedObject var store:VoiceStore
     @Environment(\.openWindow) private var openWindow
-    @State private var confirmClearHistory = false
+    @State private var showClearConfirm = false
     var body:some View {
         VStack(alignment:.leading,spacing:0) {
             HStack(spacing:10) {
@@ -393,7 +393,7 @@ struct MenuPanel:View {
                 Button {NSApp.activate(ignoringOtherApps:true);openWindow(id:"settings")} label:{Image(systemName:"gearshape").font(.system(size:18))}.buttonStyle(.plain).help("打开设置")
             }.padding(16)
             Divider()
-            HStack {Text("已播放记录").font(.subheadline).bold();Spacer();Button("清空记录"){confirmClearHistory=true}.font(.caption).foregroundStyle(.secondary);Text("\(store.history.filter{Calendar.current.isDateInToday($0.timestamp)}.count) 条（今日）").font(.caption).foregroundStyle(.secondary)}.padding(.horizontal,16).padding(.vertical,10)
+            HStack(spacing:8) {Text("已播放记录").font(.subheadline).bold();Spacer();if showClearConfirm {Button("取消"){showClearConfirm=false}.font(.caption).foregroundStyle(.secondary);Button{store.clearHistory();showClearConfirm=false}label:{Text("确认清空").font(.caption).bold()}.foregroundStyle(.red)}else{Button("清空记录"){showClearConfirm=true}.font(.caption).foregroundStyle(.secondary)};Text("\(store.history.filter{Calendar.current.isDateInToday($0.timestamp)}.count) 条（今日）").font(.caption).foregroundStyle(.secondary)}.padding(.horizontal,16).padding(.vertical,10)
             ScrollView {
                 LazyVStack(spacing:0) {
                     // macOS 13 兼容：ContentUnavailableView 仅 macOS 14+ 可用
@@ -420,10 +420,6 @@ struct MenuPanel:View {
             Divider()
             Button {NSApp.terminate(nil)} label:{Label("退出 Noti Voice",systemImage:"power")}.buttonStyle(.borderless).padding(13)
         }.frame(width:380)
-        .confirmationDialog("清空已播放记录？", isPresented:$confirmClearHistory, titleVisibility:.visible){
-            Button("清空",role:.destructive){store.clearHistory()}
-            Button("取消",role:.cancel){}
-        } message:{Text("仅清除本机播放记录，不影响服务器上的消息。")}
     }
 }
 
