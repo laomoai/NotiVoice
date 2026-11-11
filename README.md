@@ -61,6 +61,9 @@ noti-voice/
 │   ├── build-app.command     # 生成 NotiVoice.app（默认正式版，--local 本地版）
 │   ├── dist/                 # 构建产物（gitignore）
 │   └── .build/               # SwiftPM 中间产物（gitignore）
+├── scripts/                  # 可复现验证脚本
+│   ├── fi-real-d1.sh         # 真实远程 D1 故障注入（需隔离临时 Worker + 临时 D1）
+│   └── soak_regression.py    # 断网恢复 soak（真实启停本地 Worker）
 └── assets/logo/              # 图标源（SVG）+ 生成物（PNG / icns / iconset）
     ├── notivoice-release.*   # 安装/正式版（蓝，无 LOCAL 角标）
     ├── NotiVoice-release.icns

@@ -2,11 +2,13 @@
 
 > 适用版本：**V1.1.2** —— 双 Token 鉴权（`API_TOKEN` / `ADMIN_TOKEN` 互相拒绝）、设备级回执（received / played，幂等、单调、多设备隔离）、客户端 SQLite 持久化与 At-Least-Once 投递、四项可靠性修复（FIX-01~04）、三音色槽位、本机音频缓存。
 >
-> 主验收已固化为两套可重复执行的测试：
+> 主验收已固化为四套可重复执行的测试：
 > - **Worker 集成测试**：`bash cloudflare/test-worker.sh`（对本地 `wrangler dev`，覆盖 T01/T06/T12/T13/T14/T16/T19/T20/T21 + 旧接口兼容 + 错误码，**21/21 通过**）
-> - **客户端单元测试**：`cd mac && swift test`（`PersistenceTests` 14 例，覆盖 T02/T03/T04/T05/T08/T17/T18 逻辑 + FIX-01/02 的严格返回码、COMMIT 回滚、完成与 Played Outbox 同事务、eventId 复用，**14/14 通过**）
+> - **客户端单元测试**：`cd mac && swift test --disable-sandbox`（**21/21 通过** = `PersistenceTests` 14 例 + `FaultInjectionTests` 6 例 + `SoakTests` 1 例；覆盖事务原子性、COMMIT 回滚、完成与 Played Outbox 同事务、权限拒绝/损坏/SQLITE_FULL/COMMIT 失败故障注入、120 轮重开库循环）
+> - **真实远程 D1 故障注入**：`bash scripts/fi-real-d1.sh <base_url> <api_token> <admin_token> <d1_name>`（隔离临时 Worker + 隔离临时 D1，**19/19 通过**，含 batch 中途 ABORT 整批回滚）
+> - **协议层断网恢复 soak**：`python3 scripts/soak_regression.py 300 12`（真实启停 Worker 制造 2 次中断，验证补拉补发）
 >
-> 若 SwiftPM 在受限环境下报 `sandbox-exec: sandbox_apply: Operation not permitted`，改用 `swift test --disable-sandbox`（仅关闭 SwiftPM 自身沙箱，不改变测试语义）。
+> 若 SwiftPM 在受限环境下报 `sandbox-exec: sandbox_apply: Operation not permitted`，加 `--disable-sandbox`（仅关闭 SwiftPM 自身沙箱，不改变测试语义）。本机为 **Mac mini M4 / 16GB**。
 
 1. 在 macOS 执行 `bash mac/build-app.command`（或手动 `swift build -c release` 后打包），确认生成 `mac/dist/NotiVoice.app`。
 2. 部署 Worker 与 D1：全新库用 `schema.sql`（V1.1.2 基线，已含 FIX-04 触发器）；已有库依次跑 `migrations/001~004`，其中 **004 必须在启用新 Worker 前执行**，否则异载荷 `event_id` 不会被 409 拦截。本地复测可用 `npx wrangler d1 execute noti-voice --local --file=./migrations/004_ack_event_conflict_trigger.sql`。
@@ -29,11 +31,21 @@
 16. **FIX-03 存储故障**：把 `~/Library/Application Support/NotiVoice/` 下的 SQLite 主库设为只读或损坏后重启客户端，断言菜单栏红灯「本地数据库故障」、不拉取不播报不前进游标、不生成新设备 ID；恢复权限后点「重新连接数据库」，断言原队列与未送达 Outbox 继续补发。
 17. **Worker 集成测试复跑**：先 `cd cloudflare && npm run build && npx wrangler dev --port 8787`（`.dev.vars` 需含 `API_TOKEN=test_api_token_123` / `ADMIN_TOKEN=test_admin_token_456`），并先对本地库执行 004；再在仓库根执行 `NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 bash cloudflare/test-worker.sh`。若环境有全局 HTTP 代理，不加 `NO_PROXY` 会让 curl 打到代理返回 502，属环境问题而非测试失败。末尾应输出 `===== 结果：21 通过 / 0 失败 =====` 与 `ALL PASS`。
 
+### 2026-11-12 补充演练（真实 D1 / 物理故障 / soak）
+
+18. **真实远程 D1 故障注入**：不要在已部署的生产 D1 上注入。新建隔离 D1（`npx wrangler d1 create notivoice-fi-<日期>`）→ 跑 `schema.sql` → 用 `tmp/fi-worker.toml` 绑定该 D1 与明文测试 Token 部署独立 Worker → 执行 `scripts/fi-real-d1.sh`。期望 19/19，尤其 FI-05：哨兵触发器令 `batch()` 第二条 ABORT 后，直查 D1 断言 `ack_events` 与 `device_receipts` 都是 0 行。结束后 `wrangler delete --config ... --force` 与 `wrangler d1 delete ... --skip-confirmation`，确认无残留资源。
+    - 坑：`wrangler d1 create` 偶发 `Authentication error [code: 10000]`（瞬时鉴权故障），重试即可；多建的副本要删。`wrangler delete` 用 `--force`，没有 `--yes`。
+19. **客户端物理故障注入**：`cd mac && swift test --disable-sandbox --filter FaultInjectionTests`。用例在临时目录用真实 SQLite 文件做 chmod 只读、覆盖库头制造损坏、`PRAGMA max_page_count` 触发 SQLITE_FULL、延迟外键令 COMMIT 失败、事务中触发器 ABORT；全部断言整事务回滚且原文件保留、不生成降级库。
+20. **持久层长循环**：`swift test --disable-sandbox --filter SoakTests`，120 轮重开库，断言 240 个 `event_id` 全不重复、无残留任务、未送达回执跨重启保留。
+21. **协议层 soak**：`python3 scripts/soak_regression.py 30 4` 先做短窗口自检，再跑 `300 12` 正式窗口。脚本真实启停本地 Worker，中断期间消息入待发队列，恢复后按原 `external_id` / `event_id` 补发；断言 `missing_after_recovery` 为空、待办清空、无 5xx、事件数 = 拉取数 × 2。
+
 ## 发布阻断项（按 V1.1.2 实现更新）
 
 **已完成并验证**：
-- Mac 本机编译与 `.app` 打包（v1.1.2，`CFBundleShortVersionString=1.1.2`）；`swift test --disable-sandbox` **14/14**。
+- Mac mini M4 本机编译与 `.app` 打包（v1.1.2，`CFBundleShortVersionString=1.1.2`）；`swift test --disable-sandbox` **21/21**（含 6 例物理故障注入 + 120 轮重开库 soak）。
 - Worker 集成测试 `cloudflare/test-worker.sh` **21/21**（含 T19/T20/T21）。
+- 真实远程 D1 故障注入 `scripts/fi-real-d1.sh` **19/19**（隔离临时 Worker + 临时 D1，资源已清理；含 batch 中途 ABORT 整批回滚）。
+- 协议层 soak `python3 scripts/soak_regression.py 300 12`：**301.6 秒 / 2 次中断 / ALL PASS**（142 条创建 = 142 条补拉、284 个不重复 `event_id`、待办清零、0 个 5xx）。
 - 客户端 SQLite 持久化（WAL、串行执行器、同事务入库+游标+received Outbox）+ ACK Outbox 网络重试；关键写入严格返回码（FIX-01）；播放完成与 Played Outbox 同事务（FIX-02）；主库故障停机不降级（FIX-03）。
 - 设备级回执 D1 `batch()` 原子幂等 + 409 冲突 + 状态单调（FIX-04）；迁移 004 已应用到生产 D1，生产 Worker Version `b6f495ee`。
 - 设备级回执 + 后台审计（`admin_audit`：清空操作留痕）。
@@ -41,8 +53,10 @@
 - 三音色槽位、本机音频缓存（100 条）、开机自启（SMAppService）。
 
 **未验证 / 仍待补充（不得宣称已完成）**：
-- 真实 D1 上的事务中途故障注入、磁盘满 / 库文件损坏 / 权限拒绝的物理故障注入；现有证据为本地 `wrangler dev` + 生产冒烟 + 代码路径审查。
-- Mac mini M4 长时间断网恢复与挂机回归。
+- GUI 客户端 `.app` 连续挂机数小时的真实回归；已跑的是协议层 soak + 持久层 120 轮重开库循环，二者均不等于 GUI 长时挂机。
+- 在**生产** D1 上注入故障（刻意改用隔离临时 D1，避免影响线上 ACK）；生产端仍只有部署后冒烟证据。
+- 真实磁盘写满 / 硬件级权限故障（用 `SQLITE_FULL` 与临时目录 chmod 做等价注入）。
+- 跨地域 / 多实例并发压测；并发证据为同 `event_id` 20 次跨请求。
 - 拉取 / 回执接口的配额与限流（当前仅推送侧有限流）。
 - `source + external_id` 提交幂等仍为「先查后插」，存在并发竞态（P2）。
 - Worker 内存 Map 限流跨实例不共享（P2）。

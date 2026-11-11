@@ -41,11 +41,47 @@
 | 生产冒烟 | 对生产 ACK 接口四项语义核对 | 幂等 / 409 / 单调 / 设备隔离均正确 |
 | 客户端构建 | `mac/dist/NotiVoice.app` | `CFBundleShortVersionString = 1.1.2` |
 
+### 补充演练（2026-11-12，用户指定）
+
+**① 真实远程 D1 故障注入（非本地 miniflare）** — `scripts/fi-real-d1.sh`
+
+隔离资源：临时 Worker `notivoice-fi-20261112`（独立 `workers.dev` 子域）+ 临时远程 D1 `notivoice-fi-20261112`（APAC / HKG），执行 `schema.sql`（含 004）。生产 Worker 与生产 D1 全程未改动；演练后临时 Worker 已删除（回访 404）、临时 D1 已删除（含误建的 `...b` 副本）、本地临时配置已清理。结果 **19/19 ALL PASS**：
+
+- FI-02 同 `event_id` 异载荷 → 409，冲突批次不产生新设备回执、既有回执不变（真实 D1 整批回滚）。
+- FI-03 同 `event_id` 并发 20 次跨请求 → `ack_events` 与 `device_receipts` 各恰好 1 行。
+- FI-04 乱序 `played → received` 不倒退、双时间戳保留、设备隔离。
+- FI-05 **batch 中途失败注入**：在 `device_receipts` 建仅命中哨兵 `device_id` 的 `RAISE(ABORT)` 触发器 → ACK 返回 500；直查真实 D1，第①条 `ack_events` 0 行、第②条回执 0 行 → 证明 `DB.batch()` 整批回滚、无半提交。DROP 触发器后同一 `event_id` 重试成功且幂等（FI-06）。
+
+**② 客户端 SQLite 物理/引擎级故障注入 + 长循环（Mac mini M4 本机）** — `mac/Tests/NotiVoiceTests/FaultInjectionTests.swift`、`SoakTests.swift`
+
+`cd mac && swift test --disable-sandbox` → **21/21 通过**（原 14 + 故障注入 6 + 长循环 1）：
+
+- 权限拒绝：目录 `0555` + 库文件 `0444` → 抛 `NVError.execFailed("attempt to write a readonly database")`，恢复权限后同文件正常打开。
+- 库文件损坏：4096 字节垃圾覆盖库头 → 初始化抛 `NVError`，原文件保留、不自动重建、不生成降级库。
+- 磁盘满等价：切 rollback journal + `PRAGMA max_page_count = page_count+1`，写入 1.5MB 消息触发真实 `SQLITE_FULL` → 整事务回滚（游标 0 / 消息 0 / 任务 0 / 回执 0），放宽限制后同批次重放成功。
+- COMMIT 阶段失败：延迟外键约束 → `COMMIT` 抛 `execFailed`，`fi_child` 0 行。
+- 事务中途 ABORT、device_id 写入失败不得返回未持久化 ID。
+- 120 轮「重开库 → 入库 → 播放完成 → 部分回执留待补发」→ 游标/消息 120、`ack_outbox` 240 行且 `event_id` 全不重复、无残留任务、最后 2 条未送达回执跨重启保留。
+
+**③ 协议层断网恢复 soak** — `scripts/soak_regression.py`（Mac mini M4 本机，真实启停本地 Worker 制造服务中断）
+
+`python3 scripts/soak_regression.py 300 12` 实跑 **301.6 秒 / 2 次中断**（每次 12s，含重启约 15.6–15.7s）：创建 142 条、恢复后拉取 142 条、`missing_after_recovery = []`、284 个 `event_id`（= 142 × received+played）全不重复、待发 POST / 待发 ACK 均清零、12 次拉取失败与 42 次 POST 失败全部发生在中断窗口并由恢复后重放吸收、`server_5xx = 0` → **ALL PASS**。先用 `30 4` 短窗口自检过脚本，再跑正式窗口。
+
+### 演练后的证据汇总
+
+| 验证 | 结果 |
+| --- | --- |
+| 客户端单测（含 6 例物理故障注入 + 120 轮重开库） | **21/21** |
+| Worker 集成测试 | **21/21** |
+| 真实远程 D1 故障注入（隔离资源） | **19/19** |
+| 5 分钟协议 soak（2 次真实中断） | **ALL PASS**（142/142） |
+
 ### 未验证与剩余风险（明确标注）
 
-- **未**在真实 D1 上做事务中途故障注入；并发与回滚证据来自本地 `wrangler dev` + 生产冒烟，不等于生产故障演练。
-- **未**对磁盘满、数据库文件损坏、权限拒绝做真实物理故障注入；FIX-03 验证为代码路径审查 + 本地状态机 / 健康探针测试。
-- **未**在 Mac mini M4 做长时间断网恢复与挂机回归；本机构建与单测通过。
+- **未**让 GUI 客户端 `.app` 连续挂机数小时；已跑的是协议层 soak（启停 Worker + 游标补拉 + 稳定 `event_id` 补发）+ 持久层 120 轮重开库循环，两者都不等于真实 GUI 长时挂机回归。
+- **未**在真实生产 D1 上注入故障（刻意用隔离临时 D1，避免影响线上 ACK）；生产端仍只有部署后冒烟证据。
+- **未**做真实磁盘写满（用 `PRAGMA max_page_count` 触发等价的 `SQLITE_FULL`）、真实硬件权限故障（用临时目录 chmod 等价注入）。
+- **未**在真实 D1 做跨地域/多实例并发压测；并发证据为 20 次跨请求。
 - `source + external_id` 提交幂等仍是「先查后插」，存在并发竞态（本轮范围外，P2）。
 - Worker 内存 Map 限流跨实例不共享（P2）。
 - 回滚方案：Worker 可用 Cloudflare Versions 回滚到 `479c6c8f`；D1 侧 004 仅新增触发器，`DROP TRIGGER IF EXISTS trg_ack_events_payload_conflict` 即可退回（旧代码不依赖它，但会退回「先查后插」竞态）。
