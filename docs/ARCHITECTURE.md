@@ -3,11 +3,11 @@
 ## 组件
 
 ```
-                  POST /api/post (text, voice)
+                  POST /api/notifications (text, voice)
   外部系统 ───────────────────────────────┐
                                           ▼
    Cloudflare Worker (src/index.js)  + D1 (SQLite `messages`)
-        │  GET /api/play?after=&limit=    │  POST /api/ack {seqs}
+        │  GET /api/notifications?after=&limit=    │  POST /api/notifications/ack {seqs}
         ▼                                 │
    macOS 菜单栏客户端 (mac/NotiVoice/main.swift)
         │  Fish Audio TTS（或 macOS 系统语音兜底）
@@ -25,17 +25,17 @@
 | 状态 | 判定 | 触发 |
 |---|---|---|
 | 未读取 | `fetched_at` 为空 | POST 推入后 |
-| 已读取·未播报 | `fetched_at` 有值、`played_at` 为空 | 被 `/api/play` 返回（`fetch_count+1`，首次时间不覆盖） |
-| 已播报 | `played_at` 有值 | 客户端播报成功后 `/api/ack` 回执 |
+| 已读取·未播报 | `fetched_at` 有值、`played_at` 为空 | 被 `/api/notifications` 返回（`fetch_count+1`，首次时间不覆盖） |
+| 已播报 | `played_at` 有值 | 客户端播报成功后 `/api/notifications/ack` 回执 |
 
 设计取舍：服务端游标只代表「已被取走」，不保证「已播报」。用 ACK 显式升级状态，使「取走但未播报」在后台可见，便于人工核对漏播。
 
 ## 数据流
 
-1. 外部系统 `POST /api/post` 推送一条文本（≤1000 字符），返回 `seq`。
-2. 客户端按本地游标 `GET /api/play?after=<cursor>&limit=50` 增量拉取；服务端标记 `fetched_at` 并返回 `next_cursor`。
-3. 客户端逐条朗读（Fish Audio TTS 或系统语音），成功后 `POST /api/ack {"seqs":[...]}` 回执。
-4. 后台 `/api/admin/messages` 拉最近 200 条，渲染三态标签与统计。
+1. 外部系统 `POST /api/notifications` 推送一条文本（≤1000 字符），返回 `seq`。
+2. 客户端按本地游标 `GET /api/notifications?after=<cursor>&limit=50` 增量拉取；服务端标记 `fetched_at` 并返回 `next_cursor`。
+3. 客户端逐条朗读（Fish Audio TTS 或系统语音），成功后 `POST /api/notifications/ack {"seqs":[...]}` 回执。
+4. 后台 `/api/admin/notifications` 拉最近 200 条，渲染三态标签与统计。
 
 首次同步：客户端以「当前最大 seq」为初始游标，**跳过历史消息**，只从之后开始播报。
 
@@ -43,7 +43,7 @@
 
 - 所有 `/api/*`（post / play / ack / admin）与后台登录共用**同一个** `API_TOKEN`（Cloudflare Secret）。
 - 校验：`Authorization: Bearer <token>` 与 `env.API_TOKEN` 字符串相等；缺失/错误返回 `401`。`/` 根页面公开，但页面内的数据请求与测试命令仍需 Token。
-- 后台测试指令门槛：curl 命令区默认 `display:none`，仅当 `load()` 用输入的 Token 调 `/api/admin/messages` 返回 200 后才显示；Token 改动/401 立即隐藏并清空命令。
+- 后台测试指令门槛：curl 命令区默认 `display:none`，仅当 `load()` 用输入的 Token 调 `/api/admin/notifications` 返回 200 后才显示；Token 改动/401 立即隐藏并清空命令。
 - Fish Audio Key **只在客户端 Keychain**，绝不经过 Worker。
 
 ## 客户端缓存

@@ -39,8 +39,8 @@ struct FishModelOption: Identifiable {
 
 @MainActor final class VoiceStore: ObservableObject {
     // 主入口：自定义域名 notivoice.laomo.app（workers.dev 作为备用，可在设置页改回）
-    @Published var endpoint = UserDefaults.standard.string(forKey:"endpoint") ?? "https://notivoice.laomo.app/api/play"
-    @Published var postEndpoint = UserDefaults.standard.string(forKey:"postEndpoint") ?? "https://notivoice.laomo.app/api/post"
+    @Published var endpoint = UserDefaults.standard.string(forKey:"endpoint") ?? "https://notivoice.laomo.app/api/notifications"
+    @Published var postEndpoint = UserDefaults.standard.string(forKey:"postEndpoint") ?? "https://notivoice.laomo.app/api/notifications"
     // 所有 /api/* 共用的 Bearer Token（与 Worker 的 API_TOKEN secret 一致，非机密）
     @Published var apiToken = UserDefaults.standard.string(forKey:"apiToken") ?? "6c8db15bf637cd0815f6551a54d18178015395912666cdd8"
     // 默认选官方免费模型，避免误用付费模型产生账单
@@ -410,8 +410,8 @@ struct SettingsWindow:View {
                 Text(["general":"通用设置","voice":"语音设置","schedule":"运行时间","about":"关于"][tab] ?? "设置").font(.title2).bold()
                 Divider()
                 if tab=="general" {
-                    VStack(alignment:.leading,spacing:7){Text("消息读取地址（GET）");TextField("https://notivoice.laomo.app/api/play",text:$store.endpoint).textFieldStyle(.roundedBorder)}
-                    VStack(alignment:.leading,spacing:7){Text("消息提交地址（仅用于发送测试）");TextField("https://notivoice.laomo.app/api/post",text:$store.postEndpoint).textFieldStyle(.roundedBorder)}
+                    VStack(alignment:.leading,spacing:7){Text("消息读取地址（GET）");TextField("https://notivoice.laomo.app/api/notifications",text:$store.endpoint).textFieldStyle(.roundedBorder)}
+                    VStack(alignment:.leading,spacing:7){Text("消息提交地址（仅用于发送测试）");TextField("https://notivoice.laomo.app/api/notifications",text:$store.postEndpoint).textFieldStyle(.roundedBorder)}
                     VStack(alignment:.leading,spacing:7){Text("API Token（Bearer，读取 / 提交 / 回执共用）");TextField("输入 API Token",text:$store.apiToken).textFieldStyle(.roundedBorder)}
                     HStack {Text("轮询间隔");Spacer();Picker("",selection:$store.interval){ForEach([3,5,10,15,30,60],id:\.self){Text("\($0) 秒").tag($0)}}.frame(width:145)}
                     Toggle("开机自动启动",isOn:$store.launchAtLogin)

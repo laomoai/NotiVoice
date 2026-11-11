@@ -9,12 +9,12 @@ macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意�
 ## 功能特性
 
 - **增量拉取**：客户端按 `seq` 游标增量获取，首次同步只建立游标、不播放历史消息。
-- **消息三态追踪**：`未读取 → 已读取·未播报 → 已播报`。`/api/play` 取走即标记「已读取」，`/api/ack` 播报成功后回执升级为「已播报」，后台页面据此验证链路是否走通。
+- **消息三态追踪**：`未读取 → 已读取·未播报 → 已播报`。`/api/notifications` 取走即标记「已读取」，`/api/notifications/ack` 播报成功后回执升级为「已播报」，后台页面据此验证链路是否走通。
 - **三音色槽位**：`#1 / #2 / #3`，POST 时通过 `voice` 指定槽位，默认 `#1`；槽位映射到本机设置的三个 Fish Audio `reference_id`，未配置则回退 `#1`。
 - **本机音频缓存**：按 `sha256(模型 + 音色 + 文本)` 缓存，上限 **100 条**，重播命中直接播放、不再调用 API；超出按最旧淘汰。
 - **Fish Audio TTS + 模型探测**：设置页「检测可用模型」逐个探测候选模型并标注「免费 / 已弃用」；生成失败自动降级 macOS 系统语音，并写 `diagnostic.log`。
 - **统一 Token 鉴权**：所有 `/api/*` 接口与后台登录共用**同一个** Bearer Token，缺失或错误一律 `401`。
-- **后台测试指令门槛**：后台页面的「音色下拉 + curl 命令 + 复制按钮」默认隐藏，仅当 Token 经 `/api/admin/messages` 验证成功后才显示；改动 Token 立即隐藏并清空命令（命令含明文 Token，勿外发）。
+- **后台测试指令门槛**：后台页面的「音色下拉 + curl 命令 + 复制按钮」默认隐藏，仅当 Token 经 `/api/admin/notifications` 验证成功后才显示；改动 Token 立即隐藏并清空命令（命令含明文 Token，勿外发）。
 - **可选运行时间窗口**：默认 `08:30–23:00`，关闭则全天运行；窗口外不拉取，恢复后补拉。
 - **推送体积限制**：每条消息 `text` ≤ **1000 字符**，请求体 ≤ **8 KB**（否则 `400 invalid_text` / `413 payload_too_large`）。
 
@@ -113,10 +113,10 @@ bash build-app.command --local    # 装入紫色带 LOCAL 角标的本地开发�
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
-| `/api/post` | POST | 推送一条通知，`{"text":"...","voice":1}`；`text`≤1000 字符，请求体≤8KB |
-| `/api/play` | GET | 按 `seq` 增量拉取，`after`/`limit`(1–100)；取走即标记「已读取」 |
-| `/api/ack` | POST | 播报成功回执，`{"seqs":[...]}`（1–100 个正整数），升级为「已播报」 |
-| `/api/admin/messages` | GET | 最近 200 条，含三态字段，供后台页面展示 |
+| `/api/notifications` | POST | 推送一条通知，`{"text":"...","voice":1}`；`text`≤1000 字符，请求体≤8KB |
+| `/api/notifications` | GET | 按 `seq` 增量拉取，`after`/`limit`(1–100)；取走即标记「已读取」 |
+| `/api/notifications/ack` | POST | 播报成功回执，`{"seqs":[...]}`（1–100 个正整数），升级为「已播报」 |
+| `/api/admin/notifications` | GET | 最近 200 条，含三态字段，供后台页面展示 |
 | `/` | GET | 公开后台页面（数据请求需 Token） |
 
 ## 安全
@@ -129,10 +129,10 @@ bash build-app.command --local    # 装入紫色带 LOCAL 角标的本地开发�
 ## 已知限制
 
 - 单条 `text` ≤ 1000 字符；请求体 ≤ 8 KB，超出分别返回 `400 invalid_text` / `413 payload_too_large`。
-- 后台 `/api/admin/messages` 仅返回最近 200 条。
+- 后台 `/api/admin/notifications` 仅返回最近 200 条。
 - 客户端本地 `history.json` 保留最近 500 条；音频缓存最多 100 条。
 - 运行时间限制为**可选开关**（默认开启 08:30–23:00），关闭即全天运行。
-- 无登录项自启；崩溃/网络抖动可能漏播，依赖 `/api/ack` 在三态中暴露「已读取未播报」以便人工核对。
+- 无登录项自启；崩溃/网络抖动可能漏播，依赖 `/api/notifications/ack` 在三态中暴露「已读取未播报」以便人工核对。
 - Fish Audio 免费模型档（如 `s2.1-pro-free`）以官方账单/配额页为准，无 SLA。
 
 ## 文档索引
