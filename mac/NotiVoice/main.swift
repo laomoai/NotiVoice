@@ -73,6 +73,7 @@ struct FishModelOption: Identifiable {
     @Published var enabled = UserDefaults.standard.object(forKey:"enabled") as? Bool ?? true
     @Published var launchAtLogin = false
     @Published var status = "准备连接"
+    @Published var saveFeedback = ""
     @Published var history: [HistoryItem] = []
     @Published var speaking = false
     @Published var volume: Double = UserDefaults.standard.object(forKey:"volume") as? Double ?? 0.8
@@ -202,6 +203,8 @@ struct FishModelOption: Identifiable {
             catch {status="开机启动设置失败：\(error.localizedDescription)"}
         }
         resetTimer()
+        saveFeedback = "设置已保存 ✓"
+        Task { try? await Task.sleep(nanoseconds:3_000_000_000); if saveFeedback == "设置已保存 ✓" { saveFeedback = "" } }
     }
     func resetTimer() {
         timer?.invalidate()
@@ -291,6 +294,11 @@ struct FishModelOption: Identifiable {
         if history.count>500 {history=Array(history.prefix(500))}
         if let data=try? JSONEncoder().encode(history) {try? data.write(to:historyURL,options:.atomic)}
     }
+    func clearHistory() {
+        history = []
+        if let data = try? JSONEncoder().encode(history) { try? data.write(to:historyURL,options:.atomic) }
+        status = "已播放记录已清空"
+    }
     private func playFile(_ url:URL,label:String) async -> Bool {
         guard let p=try? AVAudioPlayer(contentsOf:url) else{return false}
         player=p;p.volume=Float(volume);p.prepareToPlay()
@@ -375,6 +383,7 @@ enum Keychain {
 struct MenuPanel:View {
     @ObservedObject var store:VoiceStore
     @Environment(\.openWindow) private var openWindow
+    @State private var confirmClearHistory = false
     var body:some View {
         VStack(alignment:.leading,spacing:0) {
             HStack(spacing:10) {
@@ -384,7 +393,7 @@ struct MenuPanel:View {
                 Button {NSApp.activate(ignoringOtherApps:true);openWindow(id:"settings")} label:{Image(systemName:"gearshape").font(.system(size:18))}.buttonStyle(.plain).help("打开设置")
             }.padding(16)
             Divider()
-            HStack {Text("已播放记录").font(.subheadline).bold();Spacer();Text("\(store.history.filter{Calendar.current.isDateInToday($0.timestamp)}.count) 条（今日）").font(.caption).foregroundStyle(.secondary)}.padding(.horizontal,16).padding(.vertical,10)
+            HStack {Text("已播放记录").font(.subheadline).bold();Spacer();Button("清空记录"){confirmClearHistory=true}.font(.caption).foregroundStyle(.secondary);Text("\(store.history.filter{Calendar.current.isDateInToday($0.timestamp)}.count) 条（今日）").font(.caption).foregroundStyle(.secondary)}.padding(.horizontal,16).padding(.vertical,10)
             ScrollView {
                 LazyVStack(spacing:0) {
                     // macOS 13 兼容：ContentUnavailableView 仅 macOS 14+ 可用
@@ -392,7 +401,7 @@ struct MenuPanel:View {
                     ForEach(store.history) { h in
                         HStack(alignment:.top,spacing:10) {
                             Button {store.replay(h)} label:{Image(systemName:"play.circle.fill").font(.system(size:25)).foregroundStyle(.blue)}.buttonStyle(.plain).help("重播")
-                            VStack(alignment:.leading,spacing:4){Text(h.text).font(.subheadline).lineLimit(2);Text(h.result).font(.caption2).foregroundStyle(h.result=="已播放" ? Color.secondary : Color.red)}
+                            VStack(alignment:.leading,spacing:4){Text(h.text).font(.subheadline).lineLimit(2);Text(h.result).font(.caption2).foregroundStyle(h.result.hasPrefix("已播放") ? Color.green : (h.result.contains("失败") ? Color.orange : Color.secondary))}
                             Spacer(minLength:4)
                             Text(h.timestamp,style:.time).font(.caption2).foregroundStyle(.secondary)
                         }.padding(.horizontal,16).padding(.vertical,11)
@@ -411,6 +420,10 @@ struct MenuPanel:View {
             Divider()
             Button {NSApp.terminate(nil)} label:{Label("退出 Noti Voice",systemImage:"power")}.buttonStyle(.borderless).padding(13)
         }.frame(width:380)
+        .confirmationDialog("清空已播放记录？", isPresented:$confirmClearHistory, titleVisibility:.visible){
+            Button("清空",role:.destructive){store.clearHistory()}
+            Button("取消",role:.cancel){}
+        } message:{Text("仅清除本机播放记录，不影响服务器上的消息。")}
     }
 }
 
@@ -444,22 +457,28 @@ struct SettingsWindow:View {
                         if store.detectingModels {ProgressView().scaleEffect(0.7)}
                         Text(store.modelDetectStatus).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
-                    if !store.detectedModels.isEmpty {
-                        VStack(alignment:.leading,spacing:5) {
-                            Text("检测结果（点击填入模型）").font(.caption).bold()
-                            ForEach(store.detectedModels) { option in
-                                Button {store.model=option.id} label:{
-                                    HStack(spacing:7) {
-                                        Image(systemName:store.model==option.id ? "checkmark.circle.fill" : "circle").foregroundStyle(.blue)
-                                        Text(option.id).font(.system(size:11,design:.monospaced))
-                                        if option.isFree {Text("免费").font(.caption2).bold().foregroundStyle(.green)}
-                                        if option.isDeprecated {Text("已弃用").font(.caption2).foregroundStyle(.orange)}
-                                        Text(option.note).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                        Spacer(minLength:0)
+                    VStack(alignment:.leading,spacing:5) {
+                        Text("模型列表（点击填入 · 绿色「免费」表示无费用）").font(.caption).bold()
+                        ForEach(FishModelOption.candidates) { option in
+                            Button {store.model=option.id} label:{
+                                HStack(spacing:7) {
+                                    Image(systemName:store.model==option.id ? "checkmark.circle.fill" : "circle").foregroundStyle(.blue)
+                                    Text(option.id).font(.system(size:11,design:.monospaced))
+                                    if option.isFree {Text("免费").font(.caption2).bold().foregroundStyle(.green)}
+                                    if option.isDeprecated {Text("已弃用").font(.caption2).foregroundStyle(.orange)}
+                                    if !store.detectedModels.isEmpty {
+                                        if store.detectedModels.contains(where:{$0.id==option.id}) {
+                                            Text("可用").font(.caption2).foregroundStyle(.green)
+                                        } else if !option.isDeprecated {
+                                            Text("当前 Key 不可用").font(.caption2).foregroundStyle(.secondary)
+                                        }
                                     }
-                                }.buttonStyle(.plain).help(option.note)
-                            }
+                                    Text(option.note).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                    Spacer(minLength:0)
+                                }
+                            }.buttonStyle(.plain).help(option.note)
                         }
+                        Text("点「检测可用模型」用当前 Key 验证可用性；即便显示「不可用」也可手动选择（付费模型需账户有 credit，实际费用以官方账单为准）。").font(.caption2).foregroundStyle(.secondary)
                     }
                     VStack(alignment:.leading,spacing:7){Text("模型（Model）");TextField("s2.1-pro-free",text:$store.model).textFieldStyle(.roundedBorder)}
                     HStack(spacing:6){Text("免费模型").font(.caption).bold().foregroundStyle(.green);Text("s2.1-pro-free").font(.system(size:11,design:.monospaced));Text("$0 · 官方 Playground 标注免费至 2026-11-30 · 无 SLA，实际以官方账单为准").font(.caption2).foregroundStyle(.secondary)}
@@ -475,7 +494,7 @@ struct SettingsWindow:View {
                     HStack {Text("音量");Slider(value:$store.volume,in:0...1);Text("\(Int(store.volume*100))%")}
                     Button {store.testVoice()} label:{Label("测试语音",systemImage:"play.fill")}
                     if store.status.hasPrefix("Fish Audio 失败") {
-                        Text("状态：\(store.status)").font(.caption).foregroundStyle(.red).lineLimit(3)
+                        Text("状态：\(store.status)").font(.caption).foregroundStyle(.orange).lineLimit(3)
                     } else {
                         Text("状态：\(store.status)").font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
@@ -493,7 +512,7 @@ struct SettingsWindow:View {
                     Text("本软件是未签名源码构建测试版，不保证电脑休眠、系统静音时发声。").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                HStack {Spacer();Button("保存设置") {store.save()}.buttonStyle(.borderedProminent)}
+                HStack {Spacer();if !store.saveFeedback.isEmpty{Text(store.saveFeedback).font(.caption).foregroundStyle(.green)};Button("保存设置") {store.save()}.buttonStyle(.borderedProminent)}
             }.padding(24).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
         }.frame(minWidth:720,minHeight:520)
     }

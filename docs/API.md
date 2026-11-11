@@ -40,7 +40,16 @@
 | 已读取 · 未播报 | `fetched_at` 有值、`played_at` 为空 | 已被 `/api/notifications` 返回；首次同步跳过历史、或客户端还没播完/回执失败 |
 | 已播报 | `played_at` 有值 | 客户端播报成功并回执 |
 
-后台每 5 秒自动刷新，并提供一条可复制的 POST 测试命令，便于观察状态流转。
+后台每 5 秒自动刷新，并提供一条可复制的 POST 测试命令，便于观察状态流转。后台还提供「清空全部消息」按钮（需二次确认），调用下方接口。
+
+## POST /api/admin/notifications/clear
+`Authorization: Bearer <API_TOKEN>`，**删除 D1 中全部消息**（含已播报 / 未播报），不可恢复。返回 `{"ok":true,"deleted":N}`。无 Token 返回 401。仅建议测试或需重置时使用。
+
+```bash
+curl -X POST 'https://notivoice.laomo.app/api/admin/notifications/clear' \
+  -H 'Authorization: Bearer 6c8db15bf637cd0815f6551a54d18178015395912666cdd8'
+# => {"ok":true,"deleted":15}
+```
 
 ## curl 测试
 ```bash
