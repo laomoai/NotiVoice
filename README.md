@@ -115,7 +115,7 @@ bash build-app.command --local    # 装入紫色带 LOCAL 角标的本地开发�
 
 ## API 概览
 
-完整契约见 [`docs/API.md`](docs/API.md)。要点：
+完整契约见 [`docs/API.md`](docs/API.md)。所有接口根地址为 `https://notivoice.laomo.app`，下表路径为相对该根地址（实际请求须拼接完整 URL，例如 `https://notivoice.laomo.app/api/notifications`）。要点：
 
 | 接口 | 方法 | 说明 |
 |---|---|---|

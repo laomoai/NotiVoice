@@ -126,7 +126,11 @@
 
 <script>
 // 草稿阶段：本地预览（localhost/file）连线上 API；部署到 notivoice.laomo.app 后走同源
-const API_BASE = (location.hostname==='notivoice.laomo.app') ? '' : 'https://notivoice.laomo.app';
+const isLocal = location.protocol==='file:' || location.hostname==='localhost' || location.hostname==='127.0.0.1';
+// 页面自身 fetch 用同源相对路径（部署后为空）；本地预览连线上
+const API_BASE = isLocal ? 'https://notivoice.laomo.app' : '';
+// 复制给用户的 curl 命令必须带完整 host，否则在本机终端执行会报 "No host part in the URL"
+const CMD_BASE = isLocal ? 'https://notivoice.laomo.app' : location.origin;
 const ti=document.querySelector('#token'),st=document.querySelector('#status'),ls=document.querySelector('#list'),tools=document.querySelector('#tools');
 const q=String.fromCharCode(39),cmd=document.querySelector('#cmd'),copy=document.querySelector('#copy');
 let verified=false;
@@ -136,7 +140,7 @@ function buildCmd(){
  if(!verified)return;
  const slot=document.querySelector('#slot').value,tok=ti.value.trim();
  if(!tok){hideTools();return}
- cmd.textContent='curl -X POST '+q+API_BASE+'/api/notifications'+q+' -H '+q+'Content-Type: application/json'+q+' -H '+q+'Authorization: Bearer '+tok+q+' -d '+q+'{"text":"测试消息：会议将在 10 分钟后开始，请做好准备","voice":'+slot+'}'+q;
+ cmd.textContent='curl -X POST '+q+CMD_BASE+'/api/notifications'+q+' -H '+q+'Content-Type: application/json'+q+' -H '+q+'Authorization: Bearer '+tok+q+' -d '+q+'{"text":"测试消息：会议将在 10 分钟后开始，请做好准备","voice":'+slot+'}'+q;
 }
 ti.addEventListener('input',()=>{try{localStorage.setItem('nv_token',ti.value.trim())}catch(e){}hideTools()});
 document.querySelector('#slot').onchange=buildCmd;

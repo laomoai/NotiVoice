@@ -1,5 +1,7 @@
 # Noti Voice API V1.0
 
+> **接口根地址（Base URL）**：`https://notivoice.laomo.app`。下文所有 `/api/...` 路径均为相对该根地址，实际请求需拼接完整 URL，例如 `https://notivoice.laomo.app/api/notifications`。切勿只写 `/api/notifications`（curl 会报 `No host part in the URL`）。
+
 ## 统一鉴权（所有 /api/* 接口）
 所有接口共用**同一个** Bearer Token：`Authorization: Bearer <API_TOKEN>`。Token 由 `wrangler secret put API_TOKEN` 配置，全项目只此一个值，后台登录也用它。未带或错误的 Token 一律返回 `401 {"error":"unauthorized"}`。根页面 `/` 本身公开，但其中的数据请求与测试命令都需要 Token。
 
