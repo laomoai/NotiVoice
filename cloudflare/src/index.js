@@ -1,72 +1,214 @@
-const json=(obj,status=200)=>new Response(JSON.stringify(obj),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':'*'}});
-// 所有 /api/* 只认一个 Bearer Token（API_TOKEN），不再兼容其它口令
-const authorized=(req,env)=>{
- const expected=String(env.API_TOKEN||'');
- if(!expected)return false;
- const supplied=(req.headers.get('authorization')||'').replace(/^Bearer\s+/i,'').trim();
- return supplied===expected;
-};
+// NotiVoice V1.1 Worker
+// 双 Token 鉴权：API_TOKEN（提交/读取/回执） + ADMIN_TOKEN（后台管理）
+// 设备级回执：received / played 幂等、单调、多设备隔离
+// 兼容旧接口别名：/api/post（=POST /api/notifications）、/api/play（=GET /api/notifications）
+
+const json = (obj, status = 200) => new Response(JSON.stringify(obj), {
+  status,
+  headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' }
+});
+
+// 常量时间比较，避免时序侧信道
+function ctEq(a, b) {
+  const sa = String(a ?? ''), sb = String(b ?? '');
+  if (sa.length !== sb.length) return false;
+  let r = 0;
+  for (let i = 0; i < sa.length; i++) r |= sa.charCodeAt(i) ^ sb.charCodeAt(i);
+  return r === 0;
+}
+// 校验某类操作的 Token；secret 缺失时拒绝（不允许“无密钥即可用”）
+function auth(req, expected) {
+  if (!expected) return false;
+  const sup = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
+  return ctEq(sup, expected);
+}
+const nowIso = () => new Date().toISOString().replace('.000Z', 'Z');
+
+// 基础限流：模块级滑动窗口（同一 isolate 内有效，作为第一道防线；非持久化）
+const RATE = new Map(); // key -> number[] (timestamps)
+function rateLimited(key, max, windowMs) {
+  const t = Date.now();
+  const arr = (RATE.get(key) || []).filter(x => t - x < windowMs);
+  arr.push(t);
+  RATE.set(key, arr);
+  return arr.length > max;
+}
 
 // 以下两个 HTML 在部署前由 build.mjs 注入（源文件见 src/views/landing.html 与 src/views/admin.html）。
 // 占位符写法为「裸标识符」，注入后由 JSON.stringify 提供带引号的字符串字面量；请勿直接运行未构建的源文件。
 const LANDING_HTML = __LANDING_HTML__;
 const ADMIN_HTML = __ADMIN_HTML__;
 
-export default {async fetch(request,env){
- const u=new URL(request.url),p=u.pathname;
- try {
-  if(request.method==='OPTIONS')return new Response(null,{status:204,headers:{'access-control-allow-origin':'*','access-control-allow-methods':'GET,POST,OPTIONS','access-control-allow-headers':'Authorization,Content-Type','access-control-max-age':'86400'}});
-  // 公开页面（无需 Token）：/ 首页、/admin 后台入口
-  if(p==='/'&&request.method==='GET')return new Response(LANDING_HTML,{headers:{'content-type':'text/html;charset=utf-8','cache-control':'no-store'}});
-  if(p==='/admin'&&request.method==='GET')return new Response(ADMIN_HTML,{headers:{'content-type':'text/html;charset=utf-8','cache-control':'no-store'}});
-  // 统一鉴权：notifications 推送 / 拉取 / ack / admin 共用同一个 API_TOKEN
-  if(p.startsWith('/api/')&&!authorized(request,env))return json({error:'unauthorized'},401);
-  if(p==='/api/notifications'&&request.method==='POST'){
-   const size=Number(request.headers.get('content-length')||0);if(size>8192)return json({error:'payload_too_large'},413);
-   let b;try{b=await request.json()}catch{return json({error:'invalid_json'},400)}
-   const message=typeof b.text==='string'?b.text.trim():'';
-   if(!message||message.length>1000)return json({error:'invalid_text'},400);
-   const rawVoice=String(b.voice??'1').replace('#','');
-   const voice=Number(rawVoice);
-   if(![1,2,3].includes(voice))return json({error:'invalid_voice'},400);
-   const id=crypto.randomUUID();
-   const result=await env.DB.prepare('INSERT INTO messages(id,text,voice_slot) VALUES (?,?,?) RETURNING seq,created_at,voice_slot').bind(id,message,voice).first();
-   return json({ok:true,id,seq:result.seq,created_at:result.created_at,voice_slot:result.voice_slot},201);
+// 状态单调秩：pending(0) < received(1) < played(2)
+const RANK = { received: 1, played: 2 };
+
+export default {
+  async fetch(request, env) {
+    const u = new URL(request.url), p = u.pathname;
+    const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+    try {
+      if (request.method === 'OPTIONS') return new Response(null, {
+        status: 204,
+        headers: { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,POST,OPTIONS', 'access-control-allow-headers': 'Authorization,Content-Type', 'access-control-max-age': '86400' }
+      });
+      // 公开页面（无需 Token）：/ 首页、/admin 后台入口
+      if (p === '/' && request.method === 'GET') return new Response(LANDING_HTML, { headers: { 'content-type': 'text/html;charset=utf-8', 'cache-control': 'no-store' } });
+      if (p === '/admin' && request.method === 'GET') return new Response(ADMIN_HTML, { headers: { 'content-type': 'text/html;charset=utf-8', 'cache-control': 'no-store' } });
+
+      const isAdmin = p.startsWith('/api/admin/');
+      const isApi = p.startsWith('/api/');
+      if (!isApi) return json({ error: 'not_found' }, 404);
+
+      // Token 分离：后台管理只用 ADMIN_TOKEN；业务接口只用 API_TOKEN。互相拒绝。
+      if (isAdmin) {
+        if (!auth(request, env.ADMIN_TOKEN)) return json({ error: 'unauthorized' }, 401);
+      } else {
+        if (!auth(request, env.API_TOKEN)) return json({ error: 'unauthorized' }, 401);
+      }
+
+      // ---- 消息提交（POST） ----
+      // 兼容：/api/post 别名，以及旧 {text,voice} 与新 {source,external_id,title,content,priority,voice_slot}
+      if ((p === '/api/notifications' || p === '/api/post') && request.method === 'POST') {
+        if (rateLimited('post:' + ip, 60, 60_000)) return json({ error: 'rate_limited' }, 429);
+        const size = Number(request.headers.get('content-length') || 0);
+        if (size > 8192) return json({ error: 'payload_too_large' }, 413);
+        let b; try { b = await request.json(); } catch { return json({ error: 'invalid_json' }, 400); }
+        const text = typeof b.text === 'string' ? b.text.trim() : '';
+        const title = typeof b.title === 'string' ? b.title.trim() : '';
+        const content = typeof b.content === 'string' ? b.content.trim() : '';
+        const bodyText = content || title || text;
+        if (!bodyText || bodyText.length > 1000) return json({ error: 'invalid_text' }, 400);
+        const rawVoice = String(b.voice ?? b.voice_slot ?? '1').replace('#', '');
+        const voice = Number(rawVoice);
+        if (![1, 2, 3].includes(voice)) return json({ error: 'invalid_voice' }, 400);
+        const source = typeof b.source === 'string' ? b.source.slice(0, 64) : '';
+        const externalId = typeof b.external_id === 'string' && b.external_id.trim() ? b.external_id.trim().slice(0, 128) : null;
+        const priority = ['low', 'normal', 'high'].includes(b.priority) ? b.priority : 'normal';
+
+        // 幂等：source + external_id 重复提交不生成新消息
+        if (externalId) {
+          const dup = await env.DB.prepare('SELECT seq,id,created_at,voice_slot FROM messages WHERE source=? AND external_id=?').bind(source, externalId).first();
+          if (dup) return json({ ok: true, id: dup.id, seq: dup.seq, created_at: dup.created_at, voice_slot: dup.voice_slot, duplicate: true }, 200);
+        }
+        const id = crypto.randomUUID();
+        const result = await env.DB.prepare(
+          'INSERT INTO messages(id,text,title,content,priority,source,external_id,voice_slot) VALUES (?,?,?,?,?,?,?,?) RETURNING seq,created_at,voice_slot'
+        ).bind(id, bodyText, title || content || text, content || title || text, priority, source, externalId, voice).first();
+        return json({ ok: true, id, seq: result.seq, created_at: result.created_at, voice_slot: result.voice_slot, text: bodyText }, 201);
+      }
+
+      // ---- 消息拉取（GET，增量，按 seq 升序） ----
+      // 注意：GET 本身不写 fetched_at（不证明客户端已收到）；received 只能由显式回执确认。
+      if ((p === '/api/notifications' || p === '/api/play') && request.method === 'GET') {
+        const after = Number(u.searchParams.get('after') || 0);
+        if (!Number.isSafeInteger(after) || after < 0) return json({ error: 'invalid_cursor' }, 400);
+        const limit = Math.max(1, Math.min(200, Number(u.searchParams.get('limit') || 50) || 50));
+        const status = u.searchParams.get('status');
+        let where = 'seq>?', binds = [after];
+        if (status === 'pending') where += ' AND played_at IS NULL';
+        else if (status === 'played') where += ' AND played_at IS NOT NULL';
+        const { results } = await env.DB.prepare(
+          `SELECT seq,id,text,title,content,priority,voice_slot,created_at,fetched_at,fetch_count,played_at,source,external_id FROM messages WHERE ${where} ORDER BY seq ASC LIMIT ?`
+        ).bind(...binds, limit).all();
+        // 保留旧 fetched_at 作为“曾被请求”诊断，但本接口不再更新（不视为已接收）
+        return json({ messages: results, next_cursor: results.length ? results[results.length - 1].seq : after, has_more: results.length === limit });
+      }
+
+      // ---- 回执（received / played），设备级、幂等、单调、多设备隔离 ----
+      if (p === '/api/notifications/ack' && request.method === 'POST') {
+        let b; try { b = await request.json(); } catch { return json({ error: 'invalid_json' }, 400); }
+
+        // 旧客户端兼容：{seqs:[...]} → 直接标记 played_at（按 seq）
+        if (Array.isArray(b.seqs)) {
+          const seqs = b.seqs.filter(n => Number.isSafeInteger(n) && n > 0).slice(0, 100);
+          if (!seqs.length) return json({ error: 'invalid_seqs' }, 400);
+          const marks = seqs.map(() => '?').join(',');
+          await env.DB.prepare(`UPDATE messages SET played_at=COALESCE(played_at,?) WHERE seq IN (${marks})`).bind(nowIso(), ...seqs).run();
+          return json({ ok: true, acked: seqs.length });
+        }
+
+        // 新回执：device_id + message_id + status + event_id
+        const statusVal = b.status;
+        if (!['received', 'played'].includes(statusVal)) return json({ error: 'invalid_status' }, 400);
+        const messageId = typeof b.message_id === 'string' && b.message_id ? b.message_id : null;
+        const deviceId = typeof b.device_id === 'string' && b.device_id ? b.device_id : null;
+        const eventId = typeof b.event_id === 'string' && b.event_id ? b.event_id : null;
+        if (!messageId || !deviceId || !eventId) return json({ error: 'missing_fields' }, 400);
+        // 校验 message 存在
+        const msg = await env.DB.prepare('SELECT id FROM messages WHERE id=?').bind(messageId).first();
+        if (!msg) return json({ error: 'unknown_message' }, 404);
+
+        // event_id 幂等：重复回执直接成功，不重复副作用
+        const ev = await env.DB.prepare('SELECT event_id FROM ack_events WHERE event_id=?').bind(eventId).first();
+        if (ev) return json({ ok: true, duplicate: true, status: statusVal, applied: false }, 200);
+
+        const newRank = RANK[statusVal];
+        const existing = await env.DB.prepare('SELECT status,received_at,played_at FROM device_receipts WHERE message_id=? AND device_id=?').bind(messageId, deviceId).first();
+        const existingRank = existing ? (RANK[existing.status] || 0) : 0;
+        let applied = false;
+        const ts = nowIso();
+        const playedTs = typeof b.played_at === 'string' && b.played_at ? b.played_at : ts;
+
+        if (!existing) {
+          await env.DB.prepare(
+            'INSERT INTO device_receipts(message_id,device_id,status,received_at,played_at) VALUES (?,?,?,?,?)'
+          ).bind(messageId, deviceId, statusVal, newRank >= 1 ? ts : null, statusVal === 'played' ? playedTs : null).run();
+          applied = true;
+        } else if (newRank > existingRank) {
+          // 单调推进：迟到 received 不得覆盖 played；played 先于 received 到达视为已 received
+          let setRecv = existing.received_at, setPlayed = existing.played_at;
+          if (newRank >= 1 && !setRecv) setRecv = ts;
+          if (statusVal === 'played') setPlayed = playedTs;
+          await env.DB.prepare(
+            'UPDATE device_receipts SET status=?, received_at=?, played_at=? WHERE message_id=? AND device_id=?'
+          ).bind(statusVal, setRecv, setPlayed, messageId, deviceId).run();
+          applied = true;
+        } // newRank <= existingRank → 不倒退，静默成功
+
+        await env.DB.prepare('INSERT INTO ack_events(event_id,message_id,device_id,status) VALUES (?,?,?,?)').bind(eventId, messageId, deviceId, statusVal).run();
+        return json({ ok: true, status: statusVal, applied });
+      }
+
+      // ---- 后台：查询（含设备回执） ----
+      if (p === '/api/admin/notifications' && request.method === 'GET') {
+        const { results: msgs } = await env.DB.prepare(
+          'SELECT seq,id,text,title,content,priority,voice_slot,created_at,fetched_at,fetch_count,played_at,source,external_id FROM messages ORDER BY seq DESC LIMIT 200'
+        ).all();
+        const ids = msgs.map(m => m.id);
+        let receipts = {};
+        if (ids.length) {
+          const marks = ids.map(() => '?').join(',');
+          const { results: rcpts } = await env.DB.prepare(
+            `SELECT message_id,device_id,status,received_at,played_at FROM device_receipts WHERE message_id IN (${marks})`
+          ).bind(...ids).all();
+          for (const r of rcpts) (receipts[r.message_id] ||= []).push(r);
+        }
+        return json({ messages: msgs.map(m => ({ ...m, receipts: receipts[m.id] || [] })) });
+      }
+
+      // ---- 后台：审计日志 ----
+      if (p === '/api/admin/audit' && request.method === 'GET') {
+        const { results } = await env.DB.prepare('SELECT id,action,created_at,result,metadata FROM admin_audit ORDER BY id DESC LIMIT 100').all();
+        return json({ audit: results });
+      }
+
+      // ---- 后台：清空全部消息（需 ADMIN_TOKEN，已在上游校验；普通 API_TOKEN 已被拒） ----
+      if (p === '/api/admin/notifications/clear' && request.method === 'POST') {
+        const info = await env.DB.prepare('SELECT COUNT(*) AS c FROM messages').first();
+        const deleted = info ? info.c : 0;
+        await env.DB.prepare('DELETE FROM messages').run();
+        await env.DB.prepare('DELETE FROM device_receipts').run();
+        await env.DB.prepare('DELETE FROM ack_events').run();
+        const meta = JSON.stringify({ deleted, by: (request.headers.get('cf-connecting-ip') || 'unknown') });
+        await env.DB.prepare("INSERT INTO admin_audit(action,result,metadata) VALUES ('clear','ok',?)").bind(meta).run();
+        return json({ ok: true, deleted });
+      }
+
+      return json({ error: 'not_found' }, 404);
+    } catch (e) {
+      // 日志脱敏：不打印 Token 与完整正文
+      console.error('server_error:', e && e.message ? e.message : e);
+      return json({ error: 'server_error' }, 500);
+    }
   }
-  if(p==='/api/notifications'&&request.method==='GET'){
-   const after=Number(u.searchParams.get('after')||0);
-   if(!Number.isSafeInteger(after)||after<0)return json({error:'invalid_cursor'},400);
-   const limit=Math.max(1,Math.min(100,Number(u.searchParams.get('limit')||50)||50));
-   const status=u.searchParams.get('status');
-   let where='seq>?',binds=[after];
-   if(status==='pending'){where+=' AND played_at IS NULL';}
-   else if(status==='played'){where+=' AND played_at IS NOT NULL';}
-   const {results}=await env.DB.prepare(`SELECT seq,id,text,created_at,fetched_at,fetch_count,played_at,voice_slot FROM messages WHERE ${where} ORDER BY seq ASC LIMIT ?`).bind(...binds,limit).all();
-   if(results.length){
-    const marks=results.map(()=>'?').join(',');
-    await env.DB.prepare(`UPDATE messages SET fetched_at=COALESCE(fetched_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')), fetch_count=fetch_count+1 WHERE seq IN (${marks})`).bind(...results.map(r=>r.seq)).run();
-   }
-   return json({messages:results,next_cursor:results.length?results[results.length-1].seq:after,has_more:results.length===limit});
-  }
-  // 客户端播报成功后回执：把「已被取走」升级为「已播报」
-  if(p==='/api/notifications/ack'&&request.method==='POST'){
-   let b;try{b=await request.json()}catch{return json({error:'invalid_json'},400)}
-   const seqs=(Array.isArray(b.seqs)?b.seqs:[]).filter(n=>Number.isSafeInteger(n)&&n>0).slice(0,100);
-   if(!seqs.length)return json({error:'invalid_seqs'},400);
-   const marks=seqs.map(()=>'?').join(',');
-   await env.DB.prepare(`UPDATE messages SET played_at=COALESCE(played_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE seq IN (${marks})`).bind(...seqs).run();
-   return json({ok:true,acked:seqs.length});
-  }
-  if(p==='/api/admin/notifications'&&request.method==='GET'){
-   const {results}=await env.DB.prepare('SELECT seq,id,text,created_at,fetched_at,fetch_count,played_at,voice_slot FROM messages ORDER BY seq DESC LIMIT 200').all();return json({messages:results});
-  }
-  // 清空全部消息（需 Token；admin 接口，仅管理员可用）
-  if(p==='/api/admin/notifications/clear'&&request.method==='POST'){
-   const info=await env.DB.prepare('SELECT COUNT(*) AS c FROM messages').first();
-   const deleted=info?info.c:0;
-   await env.DB.prepare('DELETE FROM messages').run();
-   return json({ok:true,deleted});
-  }
-  return json({error:'not_found'},404);
- }catch(e){console.error(e);return json({error:'server_error'},500)}
-}};
+};

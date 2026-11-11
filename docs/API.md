@@ -1,64 +1,117 @@
-# Noti Voice API V1.0
+# Noti Voice API V1.1
 
 > **接口根地址（Base URL）**：`https://notivoice.laomo.app`。下文所有 `/api/...` 路径均为相对该根地址，实际请求需拼接完整 URL，例如 `https://notivoice.laomo.app/api/notifications`。切勿只写 `/api/notifications`（curl 会报 `No host part in the URL`）。
 
-## 统一鉴权（所有 /api/* 接口）
-所有接口共用**同一个** Bearer Token：`Authorization: Bearer <API_TOKEN>`。Token 由 `wrangler secret put API_TOKEN` 配置，全项目只此一个值，后台登录也用它。未带或错误的 Token 一律返回 `401 {"error":"unauthorized"}`。根页面 `/` 本身公开，但其中的数据请求与测试命令都需要 Token。
+## 鉴权模型（双 Token，V1.1 变更）
 
-所有接口共用**同一个** Bearer Token，在 Worker 的 `API_TOKEN` secret 中配置；客户端在「通用设置」中填写，**不内置默认值**（避免开源后暴露生产库）。下文示例中的 `你的TOKEN` 请替换为你自己的 Token。
+V1.1 把 Token 拆成两个，互相拒绝：
 
-## POST /api/notifications
-请求：`Content-Type: application/json` + `Authorization: Bearer <API_TOKEN>`，`{"text":"会议将在 10 分钟后开始，请做好准备","voice":2}`。
+- **`API_TOKEN`**：业务接口用（提交 / 拉取 / 回执）。配置：`wrangler secret put API_TOKEN`。
+- **`ADMIN_TOKEN`**：后台管理接口专用。配置：`wrangler secret put ADMIN_TOKEN`。
+
+| 接口 | 所需 Token |
+|---|---|
+| `POST /api/notifications`、`POST /api/post` | `API_TOKEN` |
+| `GET /api/notifications`、`GET /api/play` | `API_TOKEN` |
+| `POST /api/notifications/ack` | `API_TOKEN` |
+| `GET/POST /api/admin/*` | `ADMIN_TOKEN` |
+
+规则：用 `API_TOKEN` 调后台接口 → **401**；用 `ADMIN_TOKEN` 调业务接口 → **401**。后台登录页只接受 `ADMIN_TOKEN`，填 `API_TOKEN` 会被明确拒绝并提示。根页面 `/` 与 `/admin` 公开，但其中的数据请求仍需对应 Token。
+
+> 客户端在「通用设置」中填写 `API_TOKEN`，存于 **macOS Keychain**（非 UserDefaults / 明文）；`ADMIN_TOKEN` 仅供后台网页使用，不进客户端。
+
+## POST /api/notifications（提交消息）
+
+请求：`Content-Type: application/json` + `Authorization: Bearer <API_TOKEN>`。
+
+**新字段（推荐）**：
+```json
+{"source":"github","external_id":"issue-123","title":"标题","content":"正文内容","priority":"high","voice_slot":2}
+```
+- `source` + `external_id` 组合**幂等**：重复提交同一对不生成新消息，返回 `{"ok":true,"duplicate":true,...}`。用于外部系统重试不重复播报。
+- `title` / `content` / `priority`（`low|normal|high`，默认 `normal`）/ `voice_slot`（`1|2|3`，默认 `1`）。播报文本取 `content || title || text`。
+- 未带 `external_id` 则按 UUID 生成新消息（非幂等）。
+
+**旧字段（兼容，V1.1 仍支持）**：
+```json
+{"text":"会议将在 10 分钟后开始，请做好准备","voice":2}
+```
+`text` 与 `voice` 自动映射到 `content` / `voice_slot`。**别名**：`POST /api/post` 等价，便于老客户端无缝升级。
 
 **体积限制（双层）**：
-- `text` 字段：trim 后 **1 ～ 1000 字符**，空或超长返回 `400 invalid_text`。
-- 整个请求体：`content-length` **≤ 8192 字节**，超出返回 `413 payload_too_large`。实际由 text 上限主导，正常不会触及 8KB。
+- 播报文本（trim 后）：**1 ～ 1000 字符**，空或超长 → `400 invalid_text`。
+- 整个请求体：`content-length` **≤ 8192 字节**，超出 → `413 payload_too_large`。
+- 速率：`60 次 / 分钟 / IP`，超出 → `429 rate_limited`。
 
-`voice` 可选，取值 `1|2|3`（数字）或 `"#1"|"#2"|"#3"`，默认 `1`。它只是**音色槽位编号**，客户端把 #1/#2/#3 映射到本机设置里填的三个 Fish Audio `reference_id`；槽位没配 ID 会回退 #1，#1 也空则用模型默认音色。非法值返回 `400 invalid_voice`。
+响应（新）：`201 {"ok":true,"id":"uuid","seq":123,"created_at":"...","voice_slot":2,"text":"正文内容"}`。
+响应（旧，幂等重复）：`200 {"ok":true,"id":...,"seq":...,"duplicate":true}`。
 
-响应：`201 {"ok":true,"id":"uuid","seq":123,"created_at":"...","voice_slot":2}`。
+## GET /api/notifications（增量拉取）
 
-## GET /api/notifications?after=0&limit=50
-返回按 `seq` 升序的增量消息：
+`GET /api/notifications?after=<cursor>&limit=50`。返回按 `seq` 升序的增量消息：
 ```json
-{"messages":[{"seq":1,"id":"uuid","text":"会议将在 10 分钟后开始，请做好准备","created_at":"2026-11-11T00:00:00.000Z"}],"next_cursor":1,"has_more":false}
+{"messages":[{"seq":1,"id":"uuid","text":"...","title":"...","content":"...","priority":"normal","voice_slot":1,"created_at":"...","source":"github","external_id":"issue-123"}],"next_cursor":1,"has_more":false}
 ```
-`after` 为上次返回的 `next_cursor`。`limit` 1–100。`has_more` 为是否可能还有数据的提示（当返回量等于 limit 时为 true，可能下一页为空）。
+- `after` 为上次返回的 `next_cursor`；`limit` 1–200；`has_more` 为是否可能还有数据的提示。
+- **V1.1 关键变更**：GET **不再写入 `fetched_at`**（GET 不能证明客户端已收到）。「已接收」只能由客户端显式回执（`/ack`）确认。后台三态判定改以设备回执为准，见下文。
+- **别名**：`GET /api/play` 等价。
 
-可选 `status` 过滤（不影响默认行为）：`pending`（仅返回 `played_at` 为空，即待播报）、`played`（仅返回已播报）。不传或传其它值等同于原 `seq>after` 全量增量返回——客户端正常轮询只传 `after`，即可覆盖「崩溃重连重新拉取已取走未播报」的场景。
+## POST /api/notifications/ack（设备回执，V1.1 重写）
 
-调用即视为「已被取走」：服务端会为返回的消息写入 `fetched_at`（首次取走时间，不覆盖）并把 `fetch_count` 加 1。`messages` 每项还带 `fetched_at / fetch_count / played_at` 三个状态字段。
+客户端持久化本地后发 `received`、播报完成后发 `played`。**按设备、幂等、单调、多设备隔离**。
 
-## POST /api/notifications/ack
-客户端播报成功后回执，请求：`{"seqs":[3,4]}`（1–100 个正整数），响应 `{"ok":true,"acked":2}`。
-把对应消息的 `played_at` 写成当前时间（不覆盖已有值）。仅标记，不会重复投递或播报。同样需要共用 Token。
+**新回执**：
+```json
+{"device_id":"<uuid>","message_id":"<uuid>","status":"received","event_id":"<uuid>"}
+```
+- `status`：`received` 或 `played`。
+- `event_id`：**客户端生成的幂等键**，重复提交同一 `event_id` 直接成功（`{"ok":true,"duplicate":true,"applied":false}`），不重复副作用。
+- 状态单调：`pending < received < played`。迟到 `received` 不覆盖已有的 `played`；`played` 先于 `received` 到达视为已 `received`。**状态不允许倒退**。
+- 多设备隔离：每台设备的回执独立记录。
 
-## GET /api/admin/notifications
-`Authorization: Bearer <API_TOKEN>`，返回最近 200 条，字段为 `seq,id,text,created_at,fetched_at,fetch_count,played_at,voice_slot`。Web 后台页面在 `/`，据此显示三态标签：
+**旧回执（兼容）**：`{"seqs":[3,4]}` → 直接把对应 `seq` 的 `played_at` 写成当前时间（按 `seq` 标记播放）。仍支持。
 
-| 状态 | 判定 | 含义 |
-|---|---|---|
-| 未读取 | `fetched_at` 为空 | POST 刚推入，还没有任何客户端取走 |
-| 已读取 · 未播报 | `fetched_at` 有值、`played_at` 为空 | 已被 `/api/notifications` 返回；首次同步跳过历史、或客户端还没播完/回执失败 |
-| 已播报 | `played_at` 有值 | 客户端播报成功并回执 |
+响应：`{"ok":true,"status":"played","applied":true}`。
 
-后台每 5 秒自动刷新，并提供一条可复制的 POST 测试命令，便于观察状态流转。后台还提供「清空全部消息」按钮（需二次确认），调用下方接口。
+## GET /api/admin/notifications（后台查询，含设备回执）
 
-## POST /api/admin/notifications/clear
-`Authorization: Bearer <API_TOKEN>`，**删除 D1 中全部消息**（含已播报 / 未播报），不可恢复。返回 `{"ok":true,"deleted":N}`。无 Token 返回 401。仅建议测试或需重置时使用。
+`Authorization: Bearer <ADMIN_TOKEN>`，返回最近 200 条，每条带 `receipts` 数组：
+```json
+{"messages":[{"seq":1,"id":"uuid","text":"...","voice_slot":1,"created_at":"...",
+  "receipts":[{"message_id":"uuid","device_id":"<uuid>","status":"played","received_at":"...","played_at":"..."}]}]}
+```
+后台据此按设备渲染回执，并以「任一设备 played / 任一设备 received / 无回执」判定单条消息状态。
+
+## GET /api/admin/audit（操作审计日志，V1.1 新增）
+
+`Authorization: Bearer <ADMIN_TOKEN>`，返回最近 100 条后台操作（如 `clear`）：
+```json
+{"audit":[{"id":1,"action":"clear","created_at":"...","result":"ok","metadata":"{\"deleted\":6,\"by\":\"::1\"}"}]}
+```
+
+## POST /api/admin/notifications/clear（清空全部消息）
+
+`Authorization: Bearer <ADMIN_TOKEN>`，**删除 D1 中全部消息 + 设备回执 + 回执事件**（一并清理，避免孤儿数据），不可恢复，并写入审计日志。返回 `{"ok":true,"deleted":N}`。
 
 ```bash
 curl -X POST 'https://notivoice.laomo.app/api/admin/notifications/clear' \
-  -H 'Authorization: Bearer 你的TOKEN'
-# => {"ok":true,"deleted":15}
+  -H 'Authorization: Bearer 你的ADMIN_TOKEN'
 ```
 
 ## curl 测试
+
 ```bash
-TOKEN='你的TOKEN'
+API='你的API_TOKEN'; ADM='你的ADMIN_TOKEN'
+# 提交（新字段）
 curl -X POST 'https://notivoice.laomo.app/api/notifications' \
-  -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
-  -d '{"text":"会议将在 10 分钟后开始，请做好准备","voice":2}'
-curl -H "Authorization: Bearer $TOKEN" \
-  'https://notivoice.laomo.app/api/notifications?after=0&limit=10'
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $API" \
+  -d '{"source":"test","external_id":"x1","content":"会议将在 10 分钟后开始","priority":"high","voice_slot":2}'
+# 拉取
+curl -H "Authorization: Bearer $API" 'https://notivoice.laomo.app/api/notifications?after=0&limit=10'
+# 回执（新）
+curl -X POST 'https://notivoice.laomo.app/api/notifications/ack' \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $API" \
+  -d '{"device_id":"dev-uuid","message_id":"<上一步返回的id>","status":"played","event_id":"ev-uuid"}'
+# 后台（需 ADMIN_TOKEN）
+curl -H "Authorization: Bearer $ADM" 'https://notivoice.laomo.app/api/admin/notifications'
 ```

@@ -43,18 +43,30 @@
   .tip{font-size:13px;color:var(--muted);line-height:1.6;margin:6px 0 0}
   .status{font-size:14px;margin:14px 0;padding:10px 14px;border-radius:10px;background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--c-blue)}
   ul#list{list-style:none;margin:10px 0 0;padding:0}
-  li{padding:14px;border-bottom:1px solid var(--border);white-space:pre-wrap}
-  li:last-child{border-bottom:0}
+  li.msg{padding:14px;border-bottom:1px solid var(--border);white-space:pre-wrap}
+  li.msg:last-child{border-bottom:0}
   .line{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap}
   .badge{font-size:12px;padding:3px 10px;border-radius:20px;white-space:nowrap;font-weight:600;flex:none}
   .ok{background:var(--ok-bg);color:var(--ok)} .read{background:var(--read-bg);color:var(--read)} .new{background:var(--new-bg);color:var(--new)}
   .meta{font-size:12px;color:var(--muted);margin-top:6px}
+  .receipts{margin-top:10px;padding:10px 12px;border:1px dashed var(--border);border-radius:10px;background:var(--bg);font-size:12px}
+  .receipts .rhead{color:var(--muted);font-weight:600;margin-bottom:6px}
+  .rcpt{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:3px 0}
+  .rcpt .dev{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .rcpt .rst{font-weight:600}
+  .rst.recv{color:var(--read)} .rst.play{color:var(--ok)}
   .tools{display:none;border-top:1px solid var(--border);margin-top:16px;padding-top:16px}
   .tools.show{display:block}
   pre#cmd{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);border:1px solid var(--border);padding:14px;border-radius:10px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:8px 0}
   code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   .clear-row{display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap}
   .clear-st{font-size:13px;color:var(--muted)}
+  .audit{margin-top:18px;border-top:1px solid var(--border);padding-top:14px;display:none}
+  .audit.show{display:block}
+  ul#audit{list-style:none;margin:8px 0 0;padding:0}
+  ul#audit li{padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted);display:flex;gap:10px;flex-wrap:wrap}
+  ul#audit li .act{font-weight:600;color:var(--text)}
+  ul#audit li .ts{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   footer{border-top:1px solid var(--border);margin-top:22px;padding-top:18px;color:var(--muted);font-size:13px;display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between}
   footer .links{display:flex;gap:16px;flex-wrap:wrap}
   @media (max-width:560px){main{padding:18px}input{width:100%}}
@@ -79,19 +91,24 @@
 
   <main>
     <div class="row">
-      <input id="token" type="password" placeholder="API Token（Bearer）" autocomplete="off" />
+      <input id="token" type="password" placeholder="ADMIN_TOKEN（后台专用）" autocomplete="off" />
       <button id="load" class="primary">验证并加载</button>
     </div>
-    <p class="tip">提示：Token 仅保存在本浏览器 localStorage，不会发送到除本服务外的任何地方。</p>
+    <p class="tip">后台接口仅接受 <b>ADMIN_TOKEN</b>；普通 <b>API_TOKEN</b> 会被拒绝（HTTP 401）。Token 仅保存在本浏览器 localStorage，不会发送到除本服务外的任何地方。</p>
 
     <div class="row" style="margin-top:16px">
       <label><input type="checkbox" id="auto" /> 自动刷新（5 秒）</label>
-      <label><input type="checkbox" id="unplayed" /> 仅看未播报</label>
+      <label><input type="checkbox" id="unplayed" /> 仅看未播报（按设备回执判定）</label>
     </div>
 
-    <div id="status" class="status">请先输入 Token 并点击「验证并加载」。</div>
+    <div id="status" class="status">请先输入 ADMIN_TOKEN 并点击「验证并加载」。</div>
 
     <ul id="list"></ul>
+
+    <div id="audit" class="audit">
+      <div class="rhead" style="font-weight:600;color:var(--text)">操作审计日志</div>
+      <ul id="auditlist"></ul>
+    </div>
 
     <div id="tools" class="tools">
       <div class="row">
@@ -115,7 +132,7 @@
   </main>
 
   <footer>
-    <span>Noti Voice · 开源通知语音播报系统 · v0.1.0</span>
+    <span>Noti Voice · 开源通知语音播报系统 · v1.1</span>
     <span class="links">
       <a href="/">首页</a>
       <a href="https://github.com/laomoai/NotiVoice" target="_blank" rel="noopener">GitHub</a>
@@ -134,36 +151,88 @@ const CMD_BASE = isLocal ? 'https://notivoice.laomo.app' : location.origin;
 const ti=document.querySelector('#token'),st=document.querySelector('#status'),ls=document.querySelector('#list'),tools=document.querySelector('#tools');
 const q=String.fromCharCode(39),cmd=document.querySelector('#cmd'),copy=document.querySelector('#copy');
 let verified=false;
-try{ti.value=localStorage.getItem('nv_token')||''}catch(e){}
-function hideTools(){verified=false;cmd.textContent='';copy.textContent='复制测试命令';tools.classList.remove('show')}
+try{ti.value=localStorage.getItem('nv_admin_token')||''}catch(e){}
+function hideTools(){verified=false;cmd.textContent='';copy.textContent='复制测试命令';tools.classList.remove('show');document.querySelector('#audit').classList.remove('show')}
 function buildCmd(){
  if(!verified)return;
  const slot=document.querySelector('#slot').value,tok=ti.value.trim();
  if(!tok){hideTools();return}
  cmd.textContent='curl -X POST '+q+CMD_BASE+'/api/notifications'+q+' -H '+q+'Content-Type: application/json'+q+' -H '+q+'Authorization: Bearer '+tok+q+' -d '+q+'{"text":"测试消息：会议将在 10 分钟后开始，请做好准备","voice":'+slot+'}'+q;
 }
-ti.addEventListener('input',()=>{try{localStorage.setItem('nv_token',ti.value.trim())}catch(e){}hideTools()});
+ti.addEventListener('input',()=>{try{localStorage.setItem('nv_admin_token',ti.value.trim())}catch(e){}hideTools()});
 document.querySelector('#slot').onchange=buildCmd;
 copy.onclick=async()=>{if(!verified||!cmd.textContent)return;try{await navigator.clipboard.writeText(cmd.textContent);copy.textContent='已复制 ✓'}catch(e){copy.textContent='请手动复制'}};
 function fmt(s){return s?String(s).replace('T',' ').replace('Z','').slice(0,19):''}
+function shortId(s){return s?s.slice(0,8):''}
+// 按设备回执判定单条消息状态：任一设备 played → 已播报；否则任一设备 received → 已送达；否则未送达
+function msgStatus(m){
+  const rc=m.receipts||[];
+  if(rc.some(r=>r.status==='played'))return 'played';
+  if(rc.some(r=>r.status==='received'))return 'received';
+  return 'none';
+}
+async function loadAudit(){
+  try{
+    const r=await fetch(API_BASE+'/api/admin/audit',{headers:{Authorization:'Bearer '+ti.value.trim()}});
+    const j=await r.json();
+    const ul=document.querySelector('#auditlist');
+    if(!r.ok){ul.replaceChildren();return}
+    const rows=j.audit||[];
+    if(!rows.length){ul.replaceChildren();document.querySelector('#audit').classList.remove('show');return}
+    document.querySelector('#audit').classList.add('show');
+    ul.replaceChildren(...rows.map(a=>{
+      const li=document.createElement('li');
+      const act=document.createElement('span');act.className='act';act.textContent=a.action;
+      const res=document.createElement('span');res.textContent='· '+String(a.result||'');
+      const ts=document.createElement('span');ts.className='ts';ts.textContent=fmt(a.created_at);
+      const meta=document.createElement('span');meta.textContent=a.metadata?('· '+a.metadata):'';
+      li.append(act,res,ts,meta);return li;
+    }));
+  }catch(e){}
+}
 async function load(){
  try{
   const r=await fetch(API_BASE+'/api/admin/notifications',{headers:{Authorization:'Bearer '+ti.value.trim()}});
   const j=await r.json();
-  if(!r.ok){st.textContent=r.status===401?'Token 不正确或未提供（HTTP 401）':'请求被拒绝（HTTP '+r.status+'）';hideTools();ls.replaceChildren();return}
-  verified=true;tools.classList.add('show');buildCmd();
+  if(!r.ok){
+    if(r.status===401){st.textContent='HTTP 401：ADMIN_TOKEN 不正确，或你填的是普通 API_TOKEN（后台接口拒绝 API_TOKEN）。';}
+    else{st.textContent='请求被拒绝（HTTP '+r.status+'）';}
+    hideTools();ls.replaceChildren();return;
+  }
+  verified=true;tools.classList.add('show');buildCmd();loadAudit();
   let msgs=j.messages||[];
-  const played=msgs.filter(x=>x.played_at).length,read=msgs.filter(x=>x.fetched_at&&!x.played_at).length,fresh=msgs.filter(x=>!x.fetched_at).length;
-  st.textContent='共 '+msgs.length+' 条  ·  已播报 '+played+'  ·  已读取未播报 '+read+'  ·  未读取 '+fresh;
-  if(document.querySelector('#unplayed').checked)msgs=msgs.filter(x=>!x.played_at);
+  const played=msgs.filter(x=>msgStatus(x)==='played').length,
+        recv=msgs.filter(x=>msgStatus(x)==='received').length,
+        none=msgs.filter(x=>msgStatus(x)==='none').length;
+  st.textContent='共 '+msgs.length+' 条  ·  已播报(任一设备) '+played+'  ·  已送达未播 '+recv+'  ·  未送达 '+none;
+  if(document.querySelector('#unplayed').checked)msgs=msgs.filter(x=>msgStatus(x)!=='played');
   ls.replaceChildren(...msgs.map(x=>{
-   const li=document.createElement('li'),line=document.createElement('div'),badge=document.createElement('span'),txt=document.createElement('span'),meta=document.createElement('div');
-   if(x.played_at){badge.className='badge ok';badge.textContent='已播报 · '+fmt(x.played_at)}
-   else if(x.fetched_at){badge.className='badge read';badge.textContent='已读取 · 未播报'+(x.fetch_count>1?' · 取走 '+x.fetch_count+' 次':'')}
-   else{badge.className='badge new';badge.textContent='未读取'}
-   txt.textContent=x.text;line.className='line';line.append(badge,txt);
-   meta.className='meta';meta.textContent='#'+x.seq+' · 音色 #'+(x.voice_slot||1)+' · 投递 '+fmt(x.created_at)+(x.fetched_at?' · 首次取走 '+fmt(x.fetched_at):'')+(x.played_at?' · 播报回执 '+fmt(x.played_at):'');
-   li.append(line,meta);return li;
+   const li=document.createElement('li');li.className='msg';
+   const line=document.createElement('div'),badge=document.createElement('span'),txt=document.createElement('span'),meta=document.createElement('div');
+   const ss=msgStatus(x);
+   if(ss==='played'){badge.className='badge ok';badge.textContent='已播报 · 任一设备'}
+   else if(ss==='received'){badge.className='badge read';badge.textContent='已送达 · 未播报'}
+   else{badge.className='badge new';badge.textContent='未送达'}
+   const bodyText=x.content||x.title||x.text;
+   txt.textContent=bodyText;line.className='line';line.append(badge,txt);
+   meta.className='meta';meta.textContent='#'+x.seq+' · 音色 #'+(x.voice_slot||1)+' · 优先级 '+(x.priority||'normal')+(x.source?(' · 来源 '+x.source):'')+' · 投递 '+fmt(x.created_at)+(x.source&&x.external_id?(' · 外部ID '+x.external_id):'');
+   li.append(line,meta);
+   const rc=x.receipts||[];
+   if(rc.length){
+     const box=document.createElement('div');box.className='receipts';
+     const rh=document.createElement('div');rh.className='rhead';rh.textContent='设备回执（'+rc.length+'）';
+     box.append(rh);
+     for(const r of rc){
+       const row=document.createElement('div');row.className='rcpt';
+       const dev=document.createElement('span');dev.className='dev';dev.textContent=shortId(r.device_id);
+       const rst=document.createElement('span');rst.className='rst '+(r.status==='played'?'play':'recv');rst.textContent=r.status==='played'?'已播放':'已接收';
+       const t1=document.createElement('span');t1.textContent='接收 '+fmt(r.received_at);
+       const t2=document.createElement('span');t2.textContent=r.played_at?('· 播放 '+fmt(r.played_at)):'';
+       row.append(dev,rst,t1,t2);box.append(row);
+     }
+     li.append(box);
+   }
+   return li;
   }));
  }catch(e){st.textContent='请求失败：'+e.message;hideTools();ls.replaceChildren()}
 }
@@ -171,7 +240,7 @@ document.querySelector('#load').onclick=load;
 ti.addEventListener('keydown',e=>{if(e.key==='Enter')load()});
 document.querySelector('#unplayed').onchange=load;
 const clearBtn=document.querySelector('#clear'),clearSt=document.querySelector('#clearst');
-clearBtn.onclick=async()=>{ if(!confirm('确定清空服务器上全部消息吗？此操作不可恢复。'))return; clearSt.textContent='清空中…'; try{ const r=await fetch(API_BASE+'/api/admin/notifications/clear',{method:'POST',headers:{Authorization:'Bearer '+ti.value.trim()}}); const j=await r.json(); if(!r.ok){clearSt.textContent='清空失败（HTTP '+r.status+'）';return} clearSt.textContent='已清空 '+j.deleted+' 条'; load(); }catch(e){clearSt.textContent='清空失败：'+e.message} };
+clearBtn.onclick=async()=>{ if(!confirm('确定清空服务器上全部消息吗？此操作不可恢复，会一并删除设备回执与回执事件。'))return; clearSt.textContent='清空中…'; try{ const r=await fetch(API_BASE+'/api/admin/notifications/clear',{method:'POST',headers:{Authorization:'Bearer '+ti.value.trim()}}); const j=await r.json(); if(!r.ok){clearSt.textContent='清空失败（HTTP '+r.status+'）';return} clearSt.textContent='已清空 '+j.deleted+' 条'; load(); }catch(e){clearSt.textContent='清空失败：'+e.message} };
 setInterval(()=>{if(document.querySelector('#auto').checked&&ti.value.trim())load()},5000);
 </script>
 </body>

@@ -2,7 +2,7 @@
 
 macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意系统的文本通知（交易提醒、监控告警、定时播报等）通过简单的 HTTP 接口推送到 Mac，由菜单栏 App 自动朗读出来。后端无服务器、零运维；客户端纯 SwiftUI，自托管可控。
 
-- 后端：Cloudflare Workers + D1（SQLite），统一 Bearer Token 鉴权。
+- 后端：Cloudflare Workers + D1（SQLite），**双 Token 鉴权**（`API_TOKEN` 业务接口 / `ADMIN_TOKEN` 后台接口，互相拒绝）。
 - 客户端：SwiftUI `MenuBarExtra` 菜单栏 App（无 Dock 图标），Fish Audio TTS，可选音色，本机音频缓存。
 - 设计原型：`design/approved-concept.png`、`design/interactive-mock.html`（可离线打开的交互 Mock）。
 - 源码仓库：[github.com/laomoai/NotiVoice](https://github.com/laomoai/NotiVoice)
@@ -10,11 +10,11 @@ macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意�
 ## 功能特性
 
 - **增量拉取**：客户端按 `seq` 游标增量获取，首次同步只建立游标、不播放历史消息。
-- **消息三态追踪**：`未读取 → 已读取·未播报 → 已播报`。`/api/notifications` 取走即标记「已读取」，`/api/notifications/ack` 播报成功后回执升级为「已播报」，后台页面据此验证链路是否走通。
+- **可靠投递（At-Least-Once）**：客户端本地 SQLite 持久化，消息入库与游标推进在同一事务；`GET` 不再写「已读取」，改为客户端显式 `received` / `played` **设备级回执**（幂等、单调、多设备隔离）。失败消息不永久丢弃，自动重播 + 手动重播 + ACK Outbox 重试，崩溃恢复把 `playing` 重排为 `queued`。
 - **三音色槽位**：`#1 / #2 / #3`，POST 时通过 `voice` 指定槽位，默认 `#1`；槽位映射到本机设置的三个 Fish Audio `reference_id`，未配置则回退 `#1`。
 - **本机音频缓存**：按 `sha256(模型 + 音色 + 文本)` 缓存，上限 **100 条**，重播命中直接播放、不再调用 API；超出按最旧淘汰。
 - **Fish Audio TTS + 模型列表**：语音设置**列出全部候选模型**，绿色「免费」标签标明无费用的模型（如 `s2.1-pro-free`），「检测可用模型」用当前 Key 验证可用性并标注「可用 / 当前 Key 不可用」；付费模型也可手动选择（需账户有 credit）。生成失败自动降级 macOS 系统语音，并写 `diagnostic.log`。
-- **统一 Token 鉴权**：所有 `/api/*` 接口与后台登录共用**同一个** Bearer Token，缺失或错误一律 `401`。
+- **双 Token 鉴权（V1.1）**：`API_TOKEN` 用于业务接口（提交 / 拉取 / 回执），`ADMIN_TOKEN` 专用于后台 `/api/admin/*`，两者互相拒绝（用错一律 `401`）。客户端 `API_TOKEN` 存于 macOS **Keychain**，绝不落在 UserDefaults / 明文。
 - **后台测试指令门槛**：后台页面的「音色下拉 + curl 命令 + 复制按钮」默认隐藏，仅当 Token 经 `/api/admin/notifications` 验证成功后才显示；改动 Token 立即隐藏并清空命令（命令含明文 Token，勿外发）。
 - **清空消息**：后台页面提供「清空全部消息」按钮（二次确认），调用 `POST /api/admin/notifications/clear` 删除 D1 全部消息；客户端菜单面板提供「清空记录」仅清除本机播放历史（不影响服务器）。
 - **可选运行时间窗口**：默认 `08:30–23:00`，关闭则全天运行；窗口外不拉取，恢复后补拉。
@@ -44,13 +44,19 @@ noti-voice/
 │   ├── schema.sql            # 新建库完整表结构
 │   ├── migrations/           # 已有库增量补齐列
 │   │   ├── 001_play_status.sql
-│   │   └── 002_voice_slot.sql
+│   │   ├── 002_voice_slot.sql
+│   │   └── 003_message_fields.sql   # V1.1：新字段 + device_receipts/ack_events/admin_audit 表
 │   ├── package.json          # build / dev / deploy / db:* 脚本
-│   ├── .dev.vars.example     # 本地开发变量模板（复制为 .dev.vars）
+│   ├── .dev.vars.example     # 本地开发变量模板（复制为 .dev.vars，含双 Token）
+│   ├── .dev.vars             # 本地开发密钥（gitignore）
 │   └── node_modules/         # 依赖（gitignore）
 ├── mac/                      # 客户端：SwiftUI 菜单栏 App
 │   ├── Package.swift
-│   ├── NotiVoice/main.swift  # 客户端全部逻辑
+│   ├── NotiVoice/
+│   │   ├── App.swift         # SwiftUI 入口 + VoiceStore + UI
+│   │   ├── Persistence.swift # V1.1 本地 SQLite 持久层（C API，串行队列，WAL）
+│   │   └── AudioCoordinator.swift # V1.1 串行播放协调器（完成以 delegate 回调为准）
+│   ├── Tests/NotiVoiceTests/ # V1.1 持久层单元测试（状态机/事务/恢复/重试）
 │   ├── build-app.command     # 生成 NotiVoice.app（默认正式版，--local 本地版）
 │   ├── dist/                 # 构建产物（gitignore）
 │   └── .build/               # SwiftPM 中间产物（gitignore）
@@ -74,7 +80,10 @@ npm run db:remote
 # 已有库（仅补齐列）：依次执行
 npm run db:migrate                        # 001：fetched_at / fetch_count / played_at
 npm run db:migrate:voice                  # 002：voice_slot
-npx wrangler secret put API_TOKEN         # 全项目唯一 Bearer Token（所有接口与后台登录共用）
+npx wrangler d1 execute noti-voice --remote --file=./migrations/003_message_fields.sql  # V1.1：新字段 + 回执/审计表
+# 双 Token（V1.1）：业务接口与后台互相隔离，用错一律 401
+npx wrangler secret put API_TOKEN         # 业务接口（提交 / 拉取 / 回执）
+npx wrangler secret put ADMIN_TOKEN       # 后台管理接口专用
 npm run deploy
 ```
 
@@ -98,7 +107,7 @@ bash build-app.command --local    # 装入紫色带 LOCAL 角标的本地开发�
 - **首次启动会被 Gatekeeper 拦截**（adhoc 自签、未公证）：右键（或 Control+点击）→ 打开，或在 **系统设置 → 隐私与安全性** 点「仍要打开」。首次放行后不再拦截。
 - **菜单栏 App，无 Dock 图标**：启动后只在顶部菜单栏出现波形图标，属正常。
 - **不会开机自启**：未注册 Login Item；如需开机启动，自行在 **系统设置 → 通用 → 登录项** 添加。
-- **数据随用户走，不随 App 走**：音频缓存/历史在 `~/Library/Application Support/NotiVoice/`，Fish Key 在 Keychain，端点/Token 在 `~/Library/Preferences/cn.lemoai.notivoice.plist`。从 `dist` 移到 `/Applications` 不影响这些数据。
+- **数据随用户走，不随 App 走**：音频缓存/播放记录（SQLite）在 `~/Library/Application Support/NotiVoice/`，API Token 与 Fish Key 在 Keychain，其余配置（端点/模型/音色）在 `~/Library/Preferences/cn.lemoai.notivoice.plist`。从 `dist` 移到 `/Applications` 不影响这些数据。
 
 ## 客户端配置
 
@@ -106,7 +115,7 @@ bash build-app.command --local    # 装入紫色带 LOCAL 角标的本地开发�
 
 | 分区 | 关键配置 |
 |---|---|
-| 通用设置 | 服务器地址（如 `https://notivoice.laomo.app`，接口路径自动拼接）、API Token（Bearer，读取/提交/回执共用） |
+| 通用设置 | 服务器地址（如 `https://notivoice.laomo.app`，接口路径自动拼接）、API Token（Bearer，业务接口用，**存于 Keychain**；后台网页需另行使用 ADMIN_TOKEN） |
 | 语音设置 | Fish Audio API Key（存 Keychain）、模型（可「检测可用模型」）、音色 `#1/#2/#3` 的 `reference_id`、默认音色、语音缓存 `N/100`、音量 |
 | 运行时间 | 可选开关，默认 `08:30–23:00`，支持跨午夜，窗口外不拉取 |
 | 关于 | 版本与说明 |
@@ -117,28 +126,33 @@ bash build-app.command --local    # 装入紫色带 LOCAL 角标的本地开发�
 
 完整契约见 [`docs/API.md`](docs/API.md)。所有接口根地址为 `https://notivoice.laomo.app`，下表路径为相对该根地址（实际请求须拼接完整 URL，例如 `https://notivoice.laomo.app/api/notifications`）。要点：
 
-| 接口 | 方法 | 说明 |
-|---|---|---|
-| `/api/notifications` | POST | 推送一条通知，`{"text":"...","voice":1}`；`text`≤1000 字符，请求体≤8KB |
-| `/api/notifications` | GET | 按 `seq` 增量拉取，`after`/`limit`(1–100)；取走即标记「已读取」 |
-| `/api/notifications/ack` | POST | 播报成功回执，`{"seqs":[...]}`（1–100 个正整数），升级为「已播报」 |
-| `/api/admin/notifications` | GET | 最近 200 条，含三态字段，供后台页面展示 |
-| `/` | GET | 公开后台页面（数据请求需 Token） |
+| 接口 | 方法 | 鉴权 | 说明 |
+|---|---|---|---|
+| `/api/notifications` | POST | `API_TOKEN` | 推送通知；新字段 `source/external_id/title/content/priority/voice_slot`（`source+external_id` 幂等），兼容旧 `{"text","voice"}`；文本≤1000 字符，请求体≤8KB |
+| `/api/post` | POST | `API_TOKEN` | 上接口的旧别名（老客户端无缝升级） |
+| `/api/notifications` | GET | `API_TOKEN` | 按 `seq` 增量拉取，`after`/`limit`(1–200)；**不再写「已读取」**（取 ≠ 收到） |
+| `/api/play` | GET | `API_TOKEN` | 上接口的旧别名 |
+| `/api/notifications/ack` | POST | `API_TOKEN` | 设备回执 `{"device_id","message_id","status":"received|played","event_id"}`（幂等/单调/多设备）；兼容旧 `{"seqs":[...]}` |
+| `/api/admin/notifications` | GET | `ADMIN_TOKEN` | 最近 200 条 + **每条消息的设备回执数组**，供后台展示 |
+| `/api/admin/audit` | GET | `ADMIN_TOKEN` | 后台操作审计日志（最近 100 条，V1.1 新增） |
+| `/api/admin/notifications/clear` | POST | `ADMIN_TOKEN` | 清空全部消息 + 回执 + 回执事件（写审计日志） |
+| `/`、`/admin` | GET | 公开 | 首页 / 后台页面（页面内数据请求需对应 Token） |
 
 ## 安全
 
-- 所有 `/api/*` 与后台登录共用**唯一** `API_TOKEN`，缺失/错误返回 `401 {"error":"unauthorized"}`，不存在第二个可用口令。
-- 客户端**不再内置 Token 默认值**（开源会暴露生产库）。首次使用须在「通用设置」填写 Token；自行部署请用随机值配置 `wrangler secret put API_TOKEN` 并同步客户端。
-- Fish Audio Key **只存本机 Keychain**，不上传 Worker。
-- **尚未实现**：限流、审计、配额。当前仅靠 Token 鉴权，公开部署前建议补充上述能力。
+- **双 Token（V1.1）**：业务接口用 `API_TOKEN`，后台 `/api/admin/*` 用 `ADMIN_TOKEN`，两者互相拒绝（用错 → `401 {"error":"unauthorized"}`）。校验用常量时间比较，防计时侧信道。
+- 客户端**不内置 Token 默认值**（开源会暴露生产库）。首次使用须在「通用设置」填写 `API_TOKEN`（存 Keychain）；自行部署请用随机值 `wrangler secret put API_TOKEN` / `ADMIN_TOKEN` 并同步客户端。
+- 后台网页仅接受 `ADMIN_TOKEN`，误填 `API_TOKEN` 会被明确拒绝并提示。
+- Fish Audio Key 与 API Token **只存本机 Keychain**，不上传 Worker、不落 UserDefaults。
+- 已内置：提交限流（60 次/分钟/IP）、审计日志、体积双层限制；配额暂未实现。
 
 ## 已知限制
 
-- 单条 `text` ≤ 1000 字符；请求体 ≤ 8 KB，超出分别返回 `400 invalid_text` / `413 payload_too_large`。
-- 后台 `/api/admin/notifications` 仅返回最近 200 条。
-- 客户端本地 `history.json` 保留最近 500 条；音频缓存最多 100 条。
+- 单条播报文本 ≤ 1000 字符；请求体 ≤ 8 KB，超出分别返回 `400 invalid_text` / `413 payload_too_large`。
+- 后台 `/api/admin/notifications` 仅返回最近 200 条；审计日志保留最近 100 条。
+- 客户端本地 SQLite 保留最近 500 条播放记录；音频缓存最多 100 条。
 - 运行时间限制为**可选开关**（默认开启 08:30–23:00），关闭即全天运行。
-- 无登录项自启；崩溃/网络抖动可能漏播，依赖 `/api/notifications/ack` 在三态中暴露「已读取未播报」以便人工核对。
+- 无登录项自启；At-Least-Once 投递下崩溃恢复可能**重复播报**少量消息（`playing` 重排为 `queued`），但不会丢消息；未确认回执由 ACK Outbox 持续重试。
 - Fish Audio 免费模型档（如 `s2.1-pro-free`）以官方账单/配额页为准，无 SLA。
 
 ## 文档索引
