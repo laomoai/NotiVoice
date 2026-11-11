@@ -136,7 +136,7 @@ function buildCmd(){
  if(!verified)return;
  const slot=document.querySelector('#slot').value,tok=ti.value.trim();
  if(!tok){hideTools();return}
- cmd.textContent='curl -X POST '+q+API_BASE+'/api/notifications'+q+' -H '+q+'Content-Type: application/json'+q+' -H '+q+'Authorization: Bearer '+tok+q+' -d '+q+'{"text":"测试消息：一条新的 BTC 提醒","voice":'+slot+'}'+q;
+ cmd.textContent='curl -X POST '+q+API_BASE+'/api/notifications'+q+' -H '+q+'Content-Type: application/json'+q+' -H '+q+'Authorization: Bearer '+tok+q+' -d '+q+'{"text":"测试消息：BTC 现价 68,200 美元，触发止盈提醒","voice":'+slot+'}'+q;
 }
 ti.addEventListener('input',()=>{try{localStorage.setItem('nv_token',ti.value.trim())}catch(e){}hideTools()});
 document.querySelector('#slot').onchange=buildCmd;
