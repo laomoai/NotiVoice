@@ -20,6 +20,13 @@ macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意�
 - **可选运行时间窗口**：默认 `08:30–23:00`，关闭则全天运行；窗口外不拉取，恢复后补拉。
 - **推送体积限制**：每条消息 `text` ≤ **1000 字符**，请求体 ≤ **8 KB**（否则 `400 invalid_text` / `413 payload_too_large`）。
 
+## 客户端版本与构建标识（约定）
+
+- 版本号唯一来源是 `mac/build-app.command` 顶部的 `APP_VERSION`；升级版本**只改这一处**，不要在 UI 文案里写死版本。
+- 打包时自动写入 `Info.plist`：`CFBundleShortVersionString`（市场版本）、`CFBundleVersion`（UTC 时间戳 build）、`NVGitCommit`（构建时 commit）、`NVBuildTime`、`NVBuildVariant`（release / local）、`NVGitDirty`（源码有未提交改动时为 `yes`）。
+- **设置 → 关于** 页动态显示 `V版本 · build · 标识 · 渠道 · 构建时间`，并提供「复制版本信息」按钮；排查「实际跑的是哪版」一律以该页为准。
+- 出包：`bash mac/build-app.command --no-open`（只打包不启动）；不带参数会打包后自动打开 App，`--local` 生成紫色 LOCAL 角标的本地版。
+
 ## 项目结构
 
 ```

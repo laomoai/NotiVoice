@@ -635,6 +635,20 @@ struct ReliChip: View {
 struct SettingsWindow:View {
     @ObservedObject var store:VoiceStore
     @State private var tab="general"
+    @State private var copiedVersion=false
+    // 版本与构建标识一律从 Info.plist 读取（由 mac/build-app.command 注入），禁止在 UI 里写死
+    private var appVersion:String {
+        Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "unknown"
+    }
+    private var buildStamp:String {
+        let d=Bundle.main.infoDictionary ?? [:]
+        let b=d["CFBundleVersion"] as? String ?? "?"
+        let c=d["NVGitCommit"] as? String ?? "dev"
+        let t=d["NVBuildTime"] as? String ?? "-"
+        let v=d["NVBuildVariant"] as? String ?? "-"
+        let dirty=(d["NVGitDirty"] as? String=="yes") ? " · 含未提交改动" : ""
+        return "V\(appVersion) · build \(b) · 标识 \(c) · \(v) · \(t)\(dirty)"
+    }
     var body:some View {
         NavigationSplitView {
             List(selection:$tab) {
@@ -708,7 +722,19 @@ struct SettingsWindow:View {
                     HStack {Text("结束时间");Spacer();TextField("23:00",text:$store.end).frame(width:100).textFieldStyle(.roundedBorder)}
                     Text("运行时间之外不拉取消息；恢复运行后会继续补拉。支持跨午夜时间段，格式 HH:mm。").font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Label("Noti Voice V1.1 · 可靠消息播报",systemImage:"waveform.circle.fill").font(.headline)
+                    Label("Noti Voice V\(appVersion) · 可靠消息播报",systemImage:"waveform.circle.fill").font(.headline)
+                    VStack(alignment:.leading,spacing:6) {
+                        Text(buildStamp).font(.system(.caption,design:.monospaced)).textSelection(.enabled)
+                        HStack(spacing:10) {
+                            Button("复制版本信息") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(buildStamp,forType:.string)
+                                copiedVersion=true
+                            }.font(.caption)
+                            if copiedVersion {Text("已复制，可直接贴给开发者").font(.caption2).foregroundStyle(.green)}
+                            Text("以本页为准确认实际运行的版本").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
                     Text("macOS 13+ · Apple Silicon · SwiftUI")
                     Text("Cloudflare Worker + D1 · Fish Audio · 本地 SQLite 持久化")
                     Text("本软件是未签名源码构建测试版，不保证电脑休眠、系统静音时发声。").font(.caption).foregroundStyle(.secondary)
