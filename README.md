@@ -5,6 +5,7 @@ macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意�
 - 后端：Cloudflare Workers + D1（SQLite），统一 Bearer Token 鉴权。
 - 客户端：SwiftUI `MenuBarExtra` 菜单栏 App（无 Dock 图标），Fish Audio TTS，可选音色，本机音频缓存。
 - 设计原型：`design/approved-concept.png`、`design/interactive-mock.html`（可离线打开的交互 Mock）。
+- 源码仓库：[github.com/laomoai/NotiVoice](https://github.com/laomoai/NotiVoice)
 
 ## 功能特性
 
@@ -30,17 +31,21 @@ noti-voice/
 │   ├── approved-concept.png
 │   └── interactive-mock.html
 ├── docs/
-│   ├── API.md                # 接口契约（鉴权 / post / play / ack / admin）
+│   ├── API.md                # 接口契约（鉴权 / notifications / ack / admin）
 │   ├── TESTING.md            # 本地联调验收清单
 │   └── ARCHITECTURE.md       # 组件、数据流、状态机、鉴权设计
 ├── cloudflare/               # 后端：Worker + D1
-│   ├── src/index.js          # Worker 全部逻辑（含后台页面）
-│   ├── wrangler.toml         # 名称 / 路由 / D1 绑定
+│   ├── src/index.js          # Worker 路由与全部接口逻辑（含占位符）
+│   ├── src/views/            # 抽离的 HTML 页面模板（构建时注入）
+│   │   ├── landing.html      # 公开首页（无需 Token）
+│   │   └── admin.html        # 后台页面（数据请求需 Token）
+│   ├── build.mjs             # 读 views → 注入 index.js 占位符 → dist/worker.js
+│   ├── wrangler.toml         # 名称 / 路由 / D1 绑定（main = dist/worker.js）
 │   ├── schema.sql            # 新建库完整表结构
 │   ├── migrations/           # 已有库增量补齐列
 │   │   ├── 001_play_status.sql
 │   │   └── 002_voice_slot.sql
-│   ├── package.json          # dev / deploy / db:* 脚本
+│   ├── package.json          # build / dev / deploy / db:* 脚本
 │   ├── .dev.vars.example     # 本地开发变量模板（复制为 .dev.vars）
 │   └── node_modules/         # 依赖（gitignore）
 ├── mac/                      # 客户端：SwiftUI 菜单栏 App

@@ -6,7 +6,7 @@
                   POST /api/notifications (text, voice)
   外部系统 ───────────────────────────────┐
                                           ▼
-   Cloudflare Worker (src/index.js)  + D1 (SQLite `messages`)
+   Cloudflare Worker (src/index.js + src/views/*.html)  + D1 (SQLite `messages`)
         │  GET /api/notifications?after=&limit=    │  POST /api/notifications/ack {seqs}
         ▼                                 │
    macOS 菜单栏客户端 (mac/NotiVoice/main.swift)
@@ -15,7 +15,7 @@
    朗读 + 本机音频缓存 + history.json
 ```
 
-- **后端**：单文件 Worker（`cloudflare/src/index.js`），无框架，直接处理路由；状态存 D1。后台页面由同一文件内联 HTML/JS 输出，零额外依赖。
+- **后端**：Worker（`cloudflare/src/index.js`）无框架，直接处理路由；状态存 D1。页面模板抽离到 `cloudflare/src/views/*.html`，由 `build.mjs` 在构建时注入 `index.js` 的占位符并输出 `dist/worker.js`（`wrangler.toml` 的 `main` 指向 dist）。零运行时依赖。
 - **客户端**：SwiftUI `MenuBarExtra` 常驻菜单栏；`VoiceStore` 在 `init()` 主动启动轮询，不依赖面板是否展开。
 
 ## 消息状态机（三态）
@@ -41,7 +41,7 @@
 
 ## 鉴权模型
 
-- 所有 `/api/*`（post / play / ack / admin）与后台登录共用**同一个** `API_TOKEN`（Cloudflare Secret）。
+- 所有 `/api/*`（notifications / ack / admin）与后台登录共用**同一个** `API_TOKEN`（Cloudflare Secret）。
 - 校验：`Authorization: Bearer <token>` 与 `env.API_TOKEN` 字符串相等；缺失/错误返回 `401`。`/` 根页面公开，但页面内的数据请求与测试命令仍需 Token。
 - 后台测试指令门槛：curl 命令区默认 `display:none`，仅当 `load()` 用输入的 Token 调 `/api/admin/notifications` 返回 200 后才显示；Token 改动/401 立即隐藏并清空命令。
 - Fish Audio Key **只在客户端 Keychain**，绝不经过 Worker。
