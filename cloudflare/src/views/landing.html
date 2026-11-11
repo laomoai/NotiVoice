@@ -108,9 +108,9 @@
   <section class="features">
     <div class="feature"><div class="ico">🔔</div><h3>实时语音播报</h3><p>菜单栏常驻，后台轮询新消息并即时朗读，支持 macOS 系统语音降级兜底。</p></div>
     <div class="feature"><div class="ico">🎙️</div><h3>Fish Audio 多音色</h3><p>三个音色槽位 #1/#2/#3，可按通知类型指定音色；自动探测可用模型并标注免费。</p></div>
-    <div class="feature"><div class="ico">🔑</div><h3>统一 Token 鉴权</h3><p>所有接口与后台共用同一个 Bearer Token，简单清晰，缺失即 401。</p></div>
-    <div class="feature"><div class="ico">📡</div><h3>REST 风格 API</h3><p>标准资源命名 <code>/api/notifications</code>，增量游标拉取、播报回执、状态可观测。</p></div>
-    <div class="feature"><div class="ico">🖥️</div><h3>后台可观测</h3><p>Web 后台查看每条消息三态（未读取 / 已读取未播报 / 已播报）、统计与一键测试。</p></div>
+    <div class="feature"><div class="ico">🔑</div><h3>双 Token 鉴权</h3><p>业务接口用 <code>API_TOKEN</code>，后台管理用独立的 <code>ADMIN_TOKEN</code>，两者互相拒绝，用错即 401。</p></div>
+    <div class="feature"><div class="ico">📡</div><h3>REST 风格 API</h3><p>标准资源命名 <code>/api/notifications</code>，增量游标拉取、设备级回执（received / played）、幂等可重试。</p></div>
+    <div class="feature"><div class="ico">🖥️</div><h3>后台可观测</h3><p>Web 后台查看每条消息的按设备回执（接收 / 播放时间）、投递统计、操作审计与一键测试。</p></div>
     <div class="feature"><div class="ico">⚡</div><h3>Cloudflare 托管</h3><p>Worker + D1 零运维部署，全球边缘运行，免费额度内即可上线。</p></div>
   </section>
 
@@ -126,11 +126,13 @@ wrangler login
 # 创建 D1 数据库并初始化
 wrangler d1 create notivoice
 # 把输出的 database_id 回填进 wrangler.toml
+# 全新建库（V1.1 基线）；已有旧库则改跑 migrations/001~003
 wrangler d1 execute notivoice --local --file=./schema.sql
 wrangler d1 execute notivoice --remote --file=./schema.sql
 
-# 设置统一 API Token（任意随机值）
-wrangler secret put API_TOKEN
+# 设置双 Token（各填一个随机值，二者不同）
+wrangler secret put API_TOKEN      # 业务接口：推送 / 拉取 / 回执（客户端用这个）
+wrangler secret put ADMIN_TOKEN    # 后台管理接口专用（/admin 登录用这个）
 
 # 部署
 wrangler deploy</pre>
@@ -139,19 +141,19 @@ wrangler deploy</pre>
     <div class="steps">
       <div class="step"><span class="n">1</span><div><b>获取 NotiVoice.app</b><span>从 Release 下载，或本地 <code>bash mac/build-app.command</code> 打包。</span></div></div>
       <div class="step"><span class="n">2</span><div><b>拖入应用程序</b><span>首次打开若被拦截：右键 → 打开，或在「系统设置 → 隐私与安全性」点「仍要打开」。</span></div></div>
-      <div class="step"><span class="n">3</span><div><b>填写服务器地址与 Token</b><span>服务器地址填你的域名（如 <code>https://notivoice.laomo.app</code>），Token 与后端一致。</span></div></div>
+      <div class="step"><span class="n">3</span><div><b>填写服务器地址与 API Token</b><span>服务器地址填你的域名（如 <code>https://notivoice.laomo.app</code>），Token 填 <code>API_TOKEN</code>（存于本机 Keychain，后台网页登录才用 ADMIN_TOKEN）。</span></div></div>
     </div>
 
     <h3 style="margin:18px 0 8px">3 · 推送第一条消息</h3>
     <pre>curl -X POST 'https://notivoice.laomo.app/api/notifications' \
   -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer 你的TOKEN' \
+  -H 'Authorization: Bearer 你的API_TOKEN' \
   -d '{"text":"会议将在 10 分钟后开始，请做好准备","voice":2}'</pre>
-    <p class="lead">打开菜单栏 App，几秒内即可听到播报。也可在 <a href="/admin">后台</a> 用 Token 登录后一键发送测试。</p>
+    <p class="lead">打开菜单栏 App，几秒内即可听到播报。也可在 <a href="/admin">后台</a> 用 ADMIN_TOKEN 登录后一键发送测试。</p>
   </section>
 
   <footer>
-    <span>Noti Voice · 开源通知语音播报系统 · v0.1.0</span>
+    <span>Noti Voice · 开源通知语音播报系统 · v1.1.1</span>
     <span class="links">
       <a href="https://github.com/laomoai/NotiVoice" target="_blank" rel="noopener">GitHub</a>
       <a href="/admin">后台管理</a>

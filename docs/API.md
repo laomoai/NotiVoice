@@ -53,7 +53,7 @@ V1.1 把 Token 拆成两个，互相拒绝：
 {"messages":[{"seq":1,"id":"uuid","text":"...","title":"...","content":"...","priority":"normal","voice_slot":1,"created_at":"...","source":"github","external_id":"issue-123"}],"next_cursor":1,"has_more":false}
 ```
 - `after` 为上次返回的 `next_cursor`；`limit` 1–200；`has_more` 为是否可能还有数据的提示。
-- **V1.1 关键变更**：GET **不再写入 `fetched_at`**（GET 不能证明客户端已收到）。「已接收」只能由客户端显式回执（`/ack`）确认。后台三态判定改以设备回执为准，见下文。
+- **V1.1 关键变更**：GET **不再写入 `fetched_at`**（GET 不能证明客户端已收到）。「已接收」只能由客户端显式回执（`/ack`）确认。后台状态判定以设备回执为准；旧版客户端（仅发 `{"seqs":[...]}`，只写 `messages.played_at`）会兜底显示「已播报 · 旧版回执」，不会被误判为未送达。
 - **别名**：`GET /api/play` 等价。
 
 ## POST /api/notifications/ack（设备回执，V1.1 重写）

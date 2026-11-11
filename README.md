@@ -84,6 +84,7 @@ npx wrangler d1 execute noti-voice --remote --file=./migrations/003_message_fiel
 # 双 Token（V1.1）：业务接口与后台互相隔离，用错一律 401
 npx wrangler secret put API_TOKEN         # 业务接口（提交 / 拉取 / 回执）
 npx wrangler secret put ADMIN_TOKEN       # 后台管理接口专用
+npx wrangler secret list                  # 部署后必查：两个 secret 都必须在列
 npm run deploy
 ```
 
