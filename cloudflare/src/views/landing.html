@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noti Voice — 把通知变成语音播报</title>
+<!-- TODO: 上线前把 GitHub 链接替换为实际仓库地址 -->
+<style>
+  :root{
+    --blue:#43A6FF; --blue-deep:#0057D9; --purple:#7164D9;
+    --bg:#f5f5f7; --card:#ffffff; --text:#1d1d1f; --muted:#6e6e73;
+    --border:#e3e3e8; --radius:16px; --shadow:0 8px 32px rgba(0,0,0,.08);
+    --ok:#187a41; --ok-bg:#e5f7ec; --read:#9a5b00; --read-bg:#fff2dd; --new:#666; --new-bg:#eceff3;
+    --c-blue:#43A6FF; --c-blue2:#0057D9; --c-purple:#7164D9; --c-purple2:#4B3FA8;
+    --c-cyan:#22C3E6; --c-cyan2:#0E8FB8; --c-green:#34C759; --c-green2:#1E9E43;
+    --c-orange:#FF9F40; --c-orange2:#E07B1A; --c-pink:#FF6BAE; --c-pink2:#D94B8C;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0e0e10; --card:#1c1c1e; --text:#f5f5f7; --muted:#a1a1a6;
+      --border:#333338; --shadow:0 8px 32px rgba(0,0,0,.5);
+    }
+    .feature:hover{box-shadow:0 16px 44px rgba(0,0,0,.6)}
+    .hero::before{opacity:.7}
+  }
+  *{box-sizing:border-box}
+  body{font:16px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--text);margin:0;-webkit-font-smoothing:antialiased}
+  a{color:var(--blue-deep);text-decoration:none}
+  @media (prefers-color-scheme: dark){a{color:var(--blue)}}
+  .wrap{max-width:980px;margin:0 auto;padding:0 22px}
+  /* 顶部导航 */
+  nav{display:flex;align-items:center;gap:12px;padding:18px 0}
+  nav .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px}
+  nav .spacer{flex:1}
+  .btn{display:inline-flex;align-items:center;gap:7px;padding:10px 18px;border-radius:11px;font-weight:600;font-size:14px;cursor:pointer;border:1px solid var(--border);background:var(--card);color:var(--text)}
+  .btn.primary{background:linear-gradient(135deg,var(--blue),var(--blue-deep));color:#fff;border:0}
+  .btn:hover{opacity:.92}
+  /* Hero */
+  .hero{position:relative;overflow:hidden;padding:64px 0 40px;text-align:center}
+  .hero::before{content:"";position:absolute;left:-10%;right:-10%;top:-160px;height:460px;z-index:-1;
+    background:
+      radial-gradient(420px 420px at 18% 0%,rgba(67,166,255,.25),transparent 70%),
+      radial-gradient(360px 360px at 82% 8%,rgba(113,100,217,.22),transparent 70%),
+      radial-gradient(320px 320px at 50% 38%,rgba(255,111,174,.16),transparent 70%);
+    filter:blur(6px)}
+  .hero h1{font-size:clamp(30px,6vw,52px);line-height:1.15;margin:0 0 16px;letter-spacing:-.5px}
+  .hero h1 .grad{background:linear-gradient(120deg,var(--c-blue),var(--c-purple) 45%,var(--c-pink));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .hero p{font-size:clamp(16px,2.5vw,20px);color:var(--muted);max-width:620px;margin:0 auto 28px}
+  .hero .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  /* 特性 */
+  .features{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px;padding:30px 0 10px}
+  .feature{--accent:var(--c-blue);--accent2:var(--c-blue2);background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:22px;box-shadow:var(--shadow);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
+  .feature:hover{transform:translateY(-3px);box-shadow:0 16px 44px rgba(0,0,0,.12);border-color:var(--accent)}
+  .feature:nth-child(1){--accent:var(--c-blue);--accent2:var(--c-blue2)}
+  .feature:nth-child(2){--accent:var(--c-purple);--accent2:var(--c-purple2)}
+  .feature:nth-child(3){--accent:var(--c-cyan);--accent2:var(--c-cyan2)}
+  .feature:nth-child(4){--accent:var(--c-green);--accent2:var(--c-green2)}
+  .feature:nth-child(5){--accent:var(--c-orange);--accent2:var(--c-orange2)}
+  .feature:nth-child(6){--accent:var(--c-pink);--accent2:var(--c-pink2)}
+  .feature .ico{width:42px;height:42px;border-radius:11px;display:grid;place-items:center;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:22px;margin-bottom:14px;box-shadow:0 6px 16px color-mix(in srgb,var(--accent) 38%,transparent)}
+  .feature h3{margin:0 0 7px;font-size:17px}
+  .feature p{margin:0;color:var(--muted);font-size:14px}
+  /* 代码块 */
+  .section{padding:40px 0}
+  .section h2{font-size:26px;margin:0 0 8px;padding-left:14px;border-left:4px solid var(--c-purple)}
+  .section .lead{color:var(--muted);margin:0 0 22px}
+  pre{background:var(--card);border:1px solid var(--border);border-left:3px solid var(--c-blue);border-radius:var(--radius);padding:18px 20px;overflow:auto;font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;box-shadow:var(--shadow)}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .steps{display:grid;gap:14px;margin-top:8px}
+  .step{display:flex;gap:14px;align-items:flex-start}
+  .step .n{flex:none;width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:grid;place-items:center;font-weight:700;font-size:14px}
+  .step div{flex:1}
+  .step b{display:block;margin-bottom:2px}
+  .step span{color:var(--muted);font-size:14px}
+  footer{border-top:1px solid var(--border);margin-top:30px;padding:26px 0 40px;color:var(--muted);font-size:14px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between}
+  footer .links{display:flex;gap:18px;flex-wrap:wrap}
+  @media (max-width:560px){.hero{padding:40px 0 24px}footer{flex-direction:column;align-items:flex-start}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <span class="brand">
+      <svg width="30" height="30" viewBox="0 0 64 64" aria-hidden="true">
+        <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#43A6FF"/><stop offset="1" stop-color="#0057D9"/></linearGradient></defs>
+        <rect x="6" y="6" width="52" height="52" rx="14" fill="url(#g)"/>
+        <g fill="#fff"><rect x="20" y="26" width="4" height="12" rx="2"/><rect x="28" y="20" width="4" height="24" rx="2"/><rect x="36" y="24" width="4" height="16" rx="2"/><rect x="44" y="29" width="4" height="6" rx="2"/></g>
+        <circle cx="46" cy="44" r="4" fill="#FF9F40"/>
+      </svg>
+      Noti Voice
+    </span>
+    <span class="spacer"></span>
+    <a class="btn" href="https://github.com/lemoai/noti-voice" target="_blank" rel="noopener">★ GitHub</a>
+    <a class="btn" href="/admin">后台管理 →</a>
+  </nav>
+
+  <header class="hero">
+    <h1>把通知变成<br><span class="grad">语音播报</span></h1>
+    <p>macOS 菜单栏 App + Cloudflare 后端，把任意系统/脚本推送的文字消息，实时用 Fish Audio 多音色念出来。开源、自托管、一行 curl 即可推送。</p>
+    <div class="cta">
+      <a class="btn primary" href="#start">快速开始</a>
+      <a class="btn" href="https://github.com/lemoai/noti-voice" target="_blank" rel="noopener">查看源码</a>
+    </div>
+  </header>
+
+  <section class="features">
+    <div class="feature"><div class="ico">🔔</div><h3>实时语音播报</h3><p>菜单栏常驻，后台轮询新消息并即时朗读，支持 macOS 系统语音降级兜底。</p></div>
+    <div class="feature"><div class="ico">🎙️</div><h3>Fish Audio 多音色</h3><p>三个音色槽位 #1/#2/#3，可按通知类型指定音色；自动探测可用模型并标注免费。</p></div>
+    <div class="feature"><div class="ico">🔑</div><h3>统一 Token 鉴权</h3><p>所有接口与后台共用同一个 Bearer Token，简单清晰，缺失即 401。</p></div>
+    <div class="feature"><div class="ico">📡</div><h3>REST 风格 API</h3><p>标准资源命名 <code>/api/notifications</code>，增量游标拉取、播报回执、状态可观测。</p></div>
+    <div class="feature"><div class="ico">🖥️</div><h3>后台可观测</h3><p>Web 后台查看每条消息三态（未读取 / 已读取未播报 / 已播报）、统计与一键测试。</p></div>
+    <div class="feature"><div class="ico">⚡</div><h3>Cloudflare 托管</h3><p>Worker + D1 零运维部署，全球边缘运行，免费额度内即可上线。</p></div>
+  </section>
+
+  <section class="section" id="start">
+    <h2>快速开始</h2>
+    <p class="lead">三步跑起来：部署后端 → 安装客户端 → 推送第一条消息。</p>
+
+    <h3 style="margin:18px 0 8px">1 · 部署后端（Cloudflare）</h3>
+    <pre># 安装依赖并登录
+npm install -g wrangler
+wrangler login
+
+# 创建 D1 数据库并初始化
+wrangler d1 create notivoice
+# 把输出的 database_id 回填进 wrangler.toml
+wrangler d1 execute notivoice --local --file=./schema.sql
+wrangler d1 execute notivoice --remote --file=./schema.sql
+
+# 设置统一 API Token（任意随机值）
+wrangler secret put API_TOKEN
+
+# 部署
+wrangler deploy</pre>
+
+    <h3 style="margin:18px 0 8px">2 · 安装客户端（macOS）</h3>
+    <div class="steps">
+      <div class="step"><span class="n">1</span><div><b>获取 NotiVoice.app</b><span>从 Release 下载，或本地 <code>bash mac/build-app.command</code> 打包。</span></div></div>
+      <div class="step"><span class="n">2</span><div><b>拖入应用程序</b><span>首次打开若被拦截：右键 → 打开，或在「系统设置 → 隐私与安全性」点「仍要打开」。</span></div></div>
+      <div class="step"><span class="n">3</span><div><b>填写服务器地址与 Token</b><span>服务器地址填你的域名（如 <code>https://notivoice.laomo.app</code>），Token 与后端一致。</span></div></div>
+    </div>
+
+    <h3 style="margin:18px 0 8px">3 · 推送第一条消息</h3>
+    <pre>curl -X POST 'https://notivoice.laomo.app/api/notifications' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer 你的TOKEN' \
+  -d '{"text":"有新的 BTC 提醒","voice":2}'</pre>
+    <p class="lead">打开菜单栏 App，几秒内即可听到播报。也可在 <a href="/admin">后台</a> 用 Token 登录后一键发送测试。</p>
+  </section>
+
+  <footer>
+    <span>Noti Voice · 开源通知语音播报系统 · v0.1.0</span>
+    <span class="links">
+      <a href="https://github.com/lemoai/noti-voice" target="_blank" rel="noopener">GitHub</a>
+      <a href="/admin">后台管理</a>
+      <span>MIT License</span>
+    </span>
+  </footer>
+</div>
+</body>
+</html>

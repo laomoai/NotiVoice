@@ -1,5 +1,5 @@
 name = "noti-voice"
-main = "src/index.js"
+main = "dist/worker.js"
 compatibility_date = "2026-10-01"
 # 加 routes 后 wrangler 默认关闭 workers.dev，显式保留作为备用入口
 workers_dev = true

@@ -4,6 +4,8 @@ node_modules/
 # Cloudflare 本地状态 / 构建缓存
 .wrangler/
 .cloudflare/
+# 构建产物（由 build.mjs 从 src 注入生成，勿提交）
+cloudflare/dist/
 
 # Swift 构建产物
 .build/
