@@ -6,7 +6,7 @@
 当前共用 Token（非机密，客户端默认值与本地 `.dev.vars` 已写入）：`6c8db15bf637cd0815f6551a54d18178015395912666cdd8`
 
 ## POST /api/notifications
-请求：`Content-Type: application/json` + `Authorization: Bearer <API_TOKEN>`，`{"text":"BTC 现价 68,200 美元，触发止盈提醒","voice":2}`。
+请求：`Content-Type: application/json` + `Authorization: Bearer <API_TOKEN>`，`{"text":"会议将在 10 分钟后开始，请做好准备","voice":2}`。
 
 **体积限制（双层）**：
 - `text` 字段：trim 后 **1 ～ 1000 字符**，空或超长返回 `400 invalid_text`。
@@ -19,7 +19,7 @@
 ## GET /api/notifications?after=0&limit=50
 返回按 `seq` 升序的增量消息：
 ```json
-{"messages":[{"seq":1,"id":"uuid","text":"BTC 现价 68,200 美元，触发止盈提醒","created_at":"2026-11-11T00:00:00.000Z"}],"next_cursor":1,"has_more":false}
+{"messages":[{"seq":1,"id":"uuid","text":"会议将在 10 分钟后开始，请做好准备","created_at":"2026-11-11T00:00:00.000Z"}],"next_cursor":1,"has_more":false}
 ```
 `after` 为上次返回的 `next_cursor`。`limit` 1–100。`has_more` 为是否可能还有数据的提示（当返回量等于 limit 时为 true，可能下一页为空）。
 
@@ -56,7 +56,7 @@ curl -X POST 'https://notivoice.laomo.app/api/admin/notifications/clear' \
 TOKEN='6c8db15bf637cd0815f6551a54d18178015395912666cdd8'
 curl -X POST 'https://notivoice.laomo.app/api/notifications' \
   -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
-  -d '{"text":"BTC 现价 68,200 美元，触发止盈提醒","voice":2}'
+  -d '{"text":"会议将在 10 分钟后开始，请做好准备","voice":2}'
 curl -H "Authorization: Bearer $TOKEN" \
   'https://notivoice.laomo.app/api/notifications?after=0&limit=10'
 ```
