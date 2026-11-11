@@ -5,7 +5,7 @@
 ## 统一鉴权（所有 /api/* 接口）
 所有接口共用**同一个** Bearer Token：`Authorization: Bearer <API_TOKEN>`。Token 由 `wrangler secret put API_TOKEN` 配置，全项目只此一个值，后台登录也用它。未带或错误的 Token 一律返回 `401 {"error":"unauthorized"}`。根页面 `/` 本身公开，但其中的数据请求与测试命令都需要 Token。
 
-当前共用 Token（非机密，客户端默认值与本地 `.dev.vars` 已写入）：`6c8db15bf637cd0815f6551a54d18178015395912666cdd8`
+所有接口共用**同一个** Bearer Token，在 Worker 的 `API_TOKEN` secret 中配置；客户端在「通用设置」中填写，**不内置默认值**（避免开源后暴露生产库）。下文示例中的 `你的TOKEN` 请替换为你自己的 Token。
 
 ## POST /api/notifications
 请求：`Content-Type: application/json` + `Authorization: Bearer <API_TOKEN>`，`{"text":"会议将在 10 分钟后开始，请做好准备","voice":2}`。
@@ -49,13 +49,13 @@
 
 ```bash
 curl -X POST 'https://notivoice.laomo.app/api/admin/notifications/clear' \
-  -H 'Authorization: Bearer 6c8db15bf637cd0815f6551a54d18178015395912666cdd8'
+  -H 'Authorization: Bearer 你的TOKEN'
 # => {"ok":true,"deleted":15}
 ```
 
 ## curl 测试
 ```bash
-TOKEN='6c8db15bf637cd0815f6551a54d18178015395912666cdd8'
+TOKEN='你的TOKEN'
 curl -X POST 'https://notivoice.laomo.app/api/notifications' \
   -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
   -d '{"text":"会议将在 10 分钟后开始，请做好准备","voice":2}'

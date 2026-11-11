@@ -111,7 +111,7 @@ bash build-app.command --local    # 装入紫色带 LOCAL 角标的本地开发�
 | 运行时间 | 可选开关，默认 `08:30–23:00`，支持跨午夜，窗口外不拉取 |
 | 关于 | 版本与说明 |
 
-客户端默认值已指向 `https://notivoice.laomo.app/api/...` 与共用 Token，开箱即连已部署服务；如需自建后端，在通用设置改端点与 Token 即可。
+客户端服务器地址默认指向 `https://notivoice.laomo.app/api/...`；但 **API Token 不内置默认值**，首次使用须在「通用设置」手动填写后再连；如需自建后端，在通用设置改端点与 Token 即可。
 
 ## API 概览
 
@@ -128,7 +128,7 @@ bash build-app.command --local    # 装入紫色带 LOCAL 角标的本地开发�
 ## 安全
 
 - 所有 `/api/*` 与后台登录共用**唯一** `API_TOKEN`，缺失/错误返回 `401 {"error":"unauthorized"}`，不存在第二个可用口令。
-- 本项目 Token 由所有者定为**非机密**（与客户端默认值、文档一致），便于自部署与开源；如你另行部署，请改用随机值并同步 wrangler secret、客户端、文档。
+- 客户端**不再内置 Token 默认值**（开源会暴露生产库）。首次使用须在「通用设置」填写 Token；自行部署请用随机值配置 `wrangler secret put API_TOKEN` 并同步客户端。
 - Fish Audio Key **只存本机 Keychain**，不上传 Worker。
 - **尚未实现**：限流、审计、配额。当前仅靠 Token 鉴权，公开部署前建议补充上述能力。
 

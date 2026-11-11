@@ -53,8 +53,9 @@ struct FishModelOption: Identifiable {
         }
         return "https://notivoice.laomo.app"
     }()
-    // 所有 /api/* 共用的 Bearer Token（与 Worker 的 API_TOKEN secret 一致，非机密）
-    @Published var apiToken = UserDefaults.standard.string(forKey:"apiToken") ?? "6c8db15bf637cd0815f6551a54d18178015395912666cdd8"
+    // 所有 /api/* 共用的 Bearer Token（与 Worker 的 API_TOKEN secret 一致）。
+    // 不再内置默认值：开源后任何硬编码 Token 都会暴露生产库，改为首次使用须在「通用设置」手动填写。
+    @Published var apiToken = UserDefaults.standard.string(forKey:"apiToken") ?? ""
     // 默认选官方免费模型，避免误用付费模型产生账单
     @Published var model = UserDefaults.standard.string(forKey:"model") ?? "s2.1-pro-free"
     @Published var detectedModels: [FishModelOption] = []
@@ -223,6 +224,7 @@ struct FishModelOption: Identifiable {
     func poll() async {
         guard !polling else{return};guard enabled else{status="已暂停";return}
         guard inHours() else{status="不在播报时间内";return}
+        guard !apiToken.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else{status="请先在通用设置中填写 API Token";return}
         guard let base=normalizedBase(), var components=URLComponents(string:base), components.scheme=="https" else {status="服务器地址无效，须为 HTTPS 域名（如 https://notivoice.laomo.app）";return}
         components.path="/api/notifications"
         polling=true;defer{polling=false}
