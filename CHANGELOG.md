@@ -1,5 +1,55 @@
 # 更新日志
 
+## V1.1.2（2026-11-12）
+
+四项可靠性修复（基准 `a231652`，不改界面布局、不改双 Token 方案、不改公开 API 的成功语义）。
+
+### FIX-01（P0）SQLite 关键写入严格检查返回码 — `mac/NotiVoice/Persistence.swift`
+
+- 新增 `prepareChecked` / `bindChecked` / `stepDoneChecked` / `stepRowChecked`，记录 SQLite 错误码与 `sqlite3_errmsg`；写操作要求 `SQLITE_DONE`，读操作显式区分 `ROW` / `DONE` / 错误。
+- `setStateNow` / `setCursorNow` / `userVersion` setter / Outbox / 消息 / 历史写入改为 `throws`，删除关键写路径的 `try?` / `try!`。
+- `transaction<T>` 泛型化：`BEGIN IMMEDIATE` → 事务体 → `COMMIT`（失败上抛）→ 任一步失败 `ROLLBACK`；事务体内不再嵌套 `queue.sync`（原死锁点）。
+- 迁移与 `PRAGMA user_version` 原子完成；`deviceId` 首次创建失败不得返回未持久化的随机 ID。
+- 效果：任何写入失败都不会产生「游标前进而消息未落库」的状态，也不会被上层误判为网络错误。
+
+### FIX-02（P0）播放完成与 Played Outbox 同事务 — `Persistence.swift` / `App.swift`
+
+- 新增 `completeAndEnqueuePlayed(_:deviceId:) throws -> String`：单笔事务内校验任务状态 → 标记 `completed` → 插入 `played` Outbox → 提交。
+- `event_id` 稳定复用：同一任务重复完成时读取已存在且未送达的 played 事件，不生成第二个有效事件。
+- 仅音频 delegate 真正完成回调才调用；播放失败 / 取消不写 Played。ACK 由独立 Outbox worker 发送，服务端确认后才写 `delivered_at`。
+
+### FIX-03（P1）主库失败即停机，禁止临时库降级 — `mac/NotiVoice/App.swift`
+
+- 删除 `NSTemporaryDirectory()` 临时库自动降级逻辑；主库打开 / 迁移 / 持久化失败进入 `StorageFault`，暂停拉取、游标推进、自动播报与 ACK，保留原文件不自动重建删除。
+- 拉取 / 播报 / ACK 各路径的持久化异常统一进入 `StorageFault`（此前会被吞成网络重试）。
+- 菜单栏红灯显示可读错误，提供「重新连接数据库」；恢复时先重建本地任务与 Outbox，再启动网络拉取。
+
+### FIX-04（P1）Worker ACK 原子幂等与状态单调 — `cloudflare/src/index.js` / `schema.sql` / `migrations/004`
+
+- 事件落库 + 设备回执推进改为 `env.DB.batch([...])` 单事务，移除 JS 层「先 SELECT 判重再 INSERT」竞态窗口与 `RANK` 常量。
+- 新增迁移 `004_ack_event_conflict_trigger.sql`（并写入 `schema.sql` 基线）：触发器 `trg_ack_events_payload_conflict` 对同 `event_id` 异载荷 `RAISE(ABORT,'event_conflict')`，Worker 捕获后返回 **409** `event_conflict`，整批回滚无半提交；同载荷重试由主键 `ON CONFLICT DO NOTHING` 幂等吸收。
+- 条件 UPSERT 保证 `received → played` 单调、乱序不倒退、`received_at` 保留最早值、多设备隔离。
+- `POST /api/notifications/ack` 成功语义不变；409 说明见 `docs/API.md`。
+
+### 测试与验证（实际执行）
+
+| 项目 | 命令 | 结果 |
+| --- | --- | --- |
+| 客户端单测 | `cd mac && swift test --disable-sandbox` | **14/14 通过**（`Executed 14 tests, with 0 failures`；含 FIX-02 新增的 `testCompleteAndEnqueuePlayedAtomic` / `testCompleteTwiceYieldsSingleEvent` / `testCompleteRejectsNonPlaying` / `testCompleteUnknownJobThrows` / `testCompletionInvariantsAcrossReopen`，以及 `testTransactionRollbackOnBodyError` 等严格返回码回滚路径） |
+| Worker 集成测试 | `NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 bash cloudflare/test-worker.sh`（本地 `wrangler dev` + 本地 D1，已应用 004） | **21/21 通过**，`ALL PASS`（新增 T19 异载荷 409 + 整批回滚、T20 同 event_id 并发 20 次仅 1 行、T21 received_at 单调保留） |
+| 生产迁移 | `wrangler d1 execute ... --file=migrations/004_...sql --remote` | 已应用，生产 Worker Version `b6f495ee` |
+| 生产冒烟 | 对生产 ACK 接口四项语义核对 | 幂等 / 409 / 单调 / 设备隔离均正确 |
+| 客户端构建 | `mac/dist/NotiVoice.app` | `CFBundleShortVersionString = 1.1.2` |
+
+### 未验证与剩余风险（明确标注）
+
+- **未**在真实 D1 上做事务中途故障注入；并发与回滚证据来自本地 `wrangler dev` + 生产冒烟，不等于生产故障演练。
+- **未**对磁盘满、数据库文件损坏、权限拒绝做真实物理故障注入；FIX-03 验证为代码路径审查 + 本地状态机 / 健康探针测试。
+- **未**在 Mac mini M4 做长时间断网恢复与挂机回归；本机构建与单测通过。
+- `source + external_id` 提交幂等仍是「先查后插」，存在并发竞态（本轮范围外，P2）。
+- Worker 内存 Map 限流跨实例不共享（P2）。
+- 回滚方案：Worker 可用 Cloudflare Versions 回滚到 `479c6c8f`；D1 侧 004 仅新增触发器，`DROP TRIGGER IF EXISTS trg_ack_events_payload_conflict` 即可退回（旧代码不依赖它，但会退回「先查后插」竞态）。
+
 ## V1.1.1（2026-11-11）
 
 ### 客户端（macOS）

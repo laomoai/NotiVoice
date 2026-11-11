@@ -40,7 +40,6 @@ const LANDING_HTML = __LANDING_HTML__;
 const ADMIN_HTML = __ADMIN_HTML__;
 
 // 状态单调秩：pending(0) < received(1) < played(2)
-const RANK = { received: 1, played: 2 };
 
 export default {
   async fetch(request, env) {
@@ -128,6 +127,11 @@ export default {
         }
 
         // 新回执：device_id + message_id + status + event_id
+        // FIX-04：消除 JS 层“先 SELECT 判重再 INSERT”竞态——
+        //   ① 事件落库 + 设备回执推进放在 D1 batch() 同一事务；
+        //   ② 同 event_id 同载荷 → ON CONFLICT DO NOTHING 幂等成功；
+        //   ③ 同 event_id 异载荷 → trg_ack_events_payload_conflict 触发器 RAISE(ABORT) → 返回 409；
+        //   ④ 设备回执用条件 UPSERT 单调推进（received < played 不倒退），多设备天然隔离。
         const statusVal = b.status;
         if (!['received', 'played'].includes(statusVal)) return json({ error: 'invalid_status' }, 400);
         const messageId = typeof b.message_id === 'string' && b.message_id ? b.message_id : null;
@@ -138,35 +142,41 @@ export default {
         const msg = await env.DB.prepare('SELECT id FROM messages WHERE id=?').bind(messageId).first();
         if (!msg) return json({ error: 'unknown_message' }, 404);
 
-        // event_id 幂等：重复回执直接成功，不重复副作用
-        const ev = await env.DB.prepare('SELECT event_id FROM ack_events WHERE event_id=?').bind(eventId).first();
-        if (ev) return json({ ok: true, duplicate: true, status: statusVal, applied: false }, 200);
-
-        const newRank = RANK[statusVal];
-        const existing = await env.DB.prepare('SELECT status,received_at,played_at FROM device_receipts WHERE message_id=? AND device_id=?').bind(messageId, deviceId).first();
-        const existingRank = existing ? (RANK[existing.status] || 0) : 0;
-        let applied = false;
         const ts = nowIso();
         const playedTs = typeof b.played_at === 'string' && b.played_at ? b.played_at : ts;
-
-        if (!existing) {
-          await env.DB.prepare(
-            'INSERT INTO device_receipts(message_id,device_id,status,received_at,played_at) VALUES (?,?,?,?,?)'
-          ).bind(messageId, deviceId, statusVal, newRank >= 1 ? ts : null, statusVal === 'played' ? playedTs : null).run();
-          applied = true;
-        } else if (newRank > existingRank) {
-          // 单调推进：迟到 received 不得覆盖 played；played 先于 received 到达视为已 received
-          let setRecv = existing.received_at, setPlayed = existing.played_at;
-          if (newRank >= 1 && !setRecv) setRecv = ts;
-          if (statusVal === 'played') setPlayed = playedTs;
-          await env.DB.prepare(
-            'UPDATE device_receipts SET status=?, received_at=?, played_at=? WHERE message_id=? AND device_id=?'
-          ).bind(statusVal, setRecv, setPlayed, messageId, deviceId).run();
-          applied = true;
-        } // newRank <= existingRank → 不倒退，静默成功
-
-        await env.DB.prepare('INSERT INTO ack_events(event_id,message_id,device_id,status) VALUES (?,?,?,?)').bind(eventId, messageId, deviceId, statusVal).run();
-        return json({ ok: true, status: statusVal, applied });
+        let results;
+        try {
+          results = await env.DB.batch([
+            // ① 事件写入（幂等：同载荷 DO NOTHING；异载荷被触发器中止，整个 batch 回滚）
+            env.DB.prepare(
+              'INSERT INTO ack_events(event_id,message_id,device_id,status) VALUES (?,?,?,?) ON CONFLICT(event_id) DO NOTHING'
+            ).bind(eventId, messageId, deviceId, statusVal),
+            // ② 设备回执条件 UPSERT：received_at 沿用最早值，played 覆盖时间戳；落后状态不倒退
+            env.DB.prepare(
+              `INSERT INTO device_receipts(message_id,device_id,status,received_at,played_at) VALUES (?,?,?,?,?)
+               ON CONFLICT(message_id,device_id) DO UPDATE SET
+                 status=excluded.status,
+                 received_at=COALESCE(device_receipts.received_at, excluded.received_at),
+                 played_at=COALESCE(device_receipts.played_at, excluded.played_at)
+               WHERE CASE excluded.status WHEN 'played' THEN 2 ELSE 1 END
+                   > CASE device_receipts.status WHEN 'played' THEN 2 ELSE 1 END`
+            ).bind(messageId, deviceId, statusVal, ts, statusVal === 'played' ? playedTs : null)
+          ]);
+        } catch (e) {
+          if (String((e && e.message) || '').includes('event_conflict')) {
+            // 同 event_id 携带不同载荷：读取已提交事件，显式 409，不静默视为成功
+            const existing = await env.DB.prepare('SELECT message_id,device_id,status FROM ack_events WHERE event_id=?').bind(eventId).first();
+            return json({
+              error: 'event_conflict',
+              existing: existing || null,
+              submitted: { message_id: messageId, device_id: deviceId, status: statusVal }
+            }, 409);
+          }
+          throw e;
+        }
+        const eventChanges = results?.[0]?.meta?.changes ?? 1;
+        const applied = (results?.[1]?.meta?.changes ?? 0) > 0;
+        return json({ ok: true, duplicate: eventChanges === 0, status: statusVal, applied });
       }
 
       // ---- 后台：查询（含设备回执） ----

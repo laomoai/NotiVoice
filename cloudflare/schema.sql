@@ -40,3 +40,15 @@ CREATE TABLE IF NOT EXISTS admin_audit (
  result TEXT,
  metadata TEXT
 );
+
+-- FIX-04：同一 event_id 携带不同载荷 → 中止写入（Worker 返回 409）；同载荷幂等由主键吸收
+CREATE TRIGGER IF NOT EXISTS trg_ack_events_payload_conflict
+BEFORE INSERT ON ack_events
+WHEN EXISTS (
+  SELECT 1 FROM ack_events
+  WHERE event_id = NEW.event_id
+    AND (message_id <> NEW.message_id OR device_id <> NEW.device_id OR status <> NEW.status)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'event_conflict');
+END;

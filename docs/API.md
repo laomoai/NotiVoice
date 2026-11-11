@@ -73,6 +73,14 @@ V1.1 把 Token 拆成两个，互相拒绝：
 
 响应：`{"ok":true,"status":"played","applied":true}`。
 
+**409 冲突响应**：`{"error":"event_conflict","existing":{...},"submitted":{...}}`。
+
+**并发与幂等语义（V1.1.2 加固，FIX-04）**：
+- 事件写入与设备回执推进在 **D1 batch 同一事务**内完成，无"先查后插"竞态窗口。
+- 同一 `event_id` 重复提交（相同载荷）→ 幂等成功 `{"duplicate":true,"applied":false}`。
+- 同一 `event_id` 携带不同载荷（`message_id`/`device_id`/`status` 任一不同）→ **HTTP 409** `{"error":"event_conflict",...}`，整批回滚，不产生半提交。
+- 设备状态只允许 `received → played` 单调推进（条件 UPSERT），乱序/迟到不倒退；`received_at` 保留最早值。
+
 ## GET /api/admin/notifications（后台查询，含设备回执）
 
 `Authorization: Bearer <ADMIN_TOKEN>`，返回最近 200 条，每条带 `receipts` 数组：

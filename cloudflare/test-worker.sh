@@ -80,6 +80,27 @@ echo "===== 非法 status → 400 ====="
 BAD=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/notifications/ack" -H "Authorization: Bearer $API" -H 'Content-Type: application/json' -d "{\"device_id\":\"dx\",\"message_id\":\"$MID\",\"status\":\"bogus\",\"event_id\":\"ev-y\"}")
 ok "非法 status → 400" "$BAD" "400"
 
+echo "===== FIX-04 T19 同 event_id 异载荷 → 409 ====="
+C409=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/notifications/ack" -H "Authorization: Bearer $API" -H 'Content-Type: application/json' -d "{\"device_id\":\"devA\",\"message_id\":\"$MID\",\"status\":\"received\",\"event_id\":\"ev-A-2\"}")
+ok "T19 异载荷 event_id → 409" "$C409" "409"
+BODY409=$(curl -s -X POST "$B/api/notifications/ack" -H "Authorization: Bearer $API" -H 'Content-Type: application/json' -d "{\"device_id\":\"zz\",\"message_id\":\"$MID\",\"status\":\"received\",\"event_id\":\"ev-A-2\"}")
+ok "T19 返回 error=event_conflict" "$(echo "$BODY409"|jget '1 if d.get("error")=="event_conflict" else 0')" "1"
+# 冲突批次必须整体回滚：devA 状态不得被异载荷改动，zz 不得产生回执
+STAZ=$(curl -s "$B/api/admin/notifications" -H "Authorization: Bearer $ADM"|python3 -c "import sys,json;d=json.load(sys.stdin);m=[x for x in d['messages'] if x['id']=='$MID'][0];print([r['status'] for r in m['receipts'] if r['device_id']=='devA'][0])")
+ok "T19 冲突后 devA 状态不变" "$STAZ" "played"
+
+echo "===== FIX-04 T20 同 event_id 并发 20 次（同载荷）→ 仅 1 个事件 ====="
+for i in $(seq 1 20); do
+  curl -s -X POST "$B/api/notifications/ack" -H "Authorization: Bearer $API" -H 'Content-Type: application/json' -d "{\"device_id\":\"devP\",\"message_id\":\"$MID\",\"status\":\"received\",\"event_id\":\"ev-parallel-1\"}" >/dev/null &
+done
+wait
+EVCOUNT=$(curl -s "$B/api/admin/notifications" -H "Authorization: Bearer $ADM"|python3 -c "import sys,json;d=json.load(sys.stdin);m=[x for x in d['messages'] if x['id']=='$MID'][0];print(len([r for r in m['receipts'] if r['device_id']=='devP']))")
+ok "T20 devP 回执仅 1 行" "$EVCOUNT" "1"
+
+echo "===== FIX-04 T21 received_at 单调保留：played 后 received_at 不被清空 ====="
+RAT=$(curl -s "$B/api/admin/notifications" -H "Authorization: Bearer $ADM"|python3 -c "import sys,json;d=json.load(sys.stdin);m=[x for x in d['messages'] if x['id']=='$MID'][0];r=[x for x in m['receipts'] if x['device_id']=='devA'][0];print(1 if r['received_at'] and r['played_at'] else 0)")
+ok "T21 devA received_at/played_at 均在" "$RAT" "1"
+
 echo "===== 限流/未授权 ====="
 NOAUTH=$(curl -s -o /dev/null -w '%{http_code}' "$B/api/notifications")
 ok "无 Token → 401" "$NOAUTH" "401"

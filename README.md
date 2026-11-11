@@ -45,7 +45,8 @@ noti-voice/
 │   ├── migrations/           # 已有库增量补齐列
 │   │   ├── 001_play_status.sql
 │   │   ├── 002_voice_slot.sql
-│   │   └── 003_message_fields.sql   # V1.1：新字段 + device_receipts/ack_events/admin_audit 表
+│   │   ├── 003_message_fields.sql   # V1.1：新字段 + device_receipts/ack_events/admin_audit 表
+│   │   └── 004_ack_event_conflict_trigger.sql # V1.1.2：同 event_id 异载荷 → 409 的触发器
 │   ├── package.json          # build / dev / deploy / db:* 脚本
 │   ├── .dev.vars.example     # 本地开发变量模板（复制为 .dev.vars，含双 Token）
 │   ├── .dev.vars             # 本地开发密钥（gitignore）
@@ -81,6 +82,7 @@ npm run db:remote
 npm run db:migrate                        # 001：fetched_at / fetch_count / played_at
 npm run db:migrate:voice                  # 002：voice_slot
 npx wrangler d1 execute noti-voice --remote --file=./migrations/003_message_fields.sql  # V1.1：新字段 + 回执/审计表
+npx wrangler d1 execute noti-voice --remote --file=./migrations/004_ack_event_conflict_trigger.sql  # V1.1.2：ACK 载荷冲突触发器（启用新 Worker 前必跑）
 # 双 Token（V1.1）：业务接口与后台互相隔离，用错一律 401
 npx wrangler secret put API_TOKEN         # 业务接口（提交 / 拉取 / 回执）
 npx wrangler secret put ADMIN_TOKEN       # 后台管理接口专用

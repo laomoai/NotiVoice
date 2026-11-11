@@ -84,16 +84,17 @@ struct FishModelOption: Identifiable {
     @Published var bootstrapped: Bool = false
     // 启动自检状态机（V1.1.1）：状态灯/文案以真实检查结果为准，不再看 enabled 开关脸色
     @Published var health: Health = .checking
+    @Published var storageFaultDetail = ""
     enum Health {
-        case checking, paused, offHours, unconfigured, invalidToken, unreachable, dbFallback, playing, ok
+        case checking, paused, offHours, unconfigured, invalidToken, unreachable, storageFault, playing, ok
     }
     var statusDot: Color {
         switch health {
         case .ok, .playing: return .green
         case .paused, .offHours: return .gray
         case .checking: return .yellow
-        case .unconfigured, .dbFallback: return .orange
-        case .invalidToken, .unreachable: return .red
+        case .unconfigured: return .orange
+        case .invalidToken, .unreachable, .storageFault: return .red
         }
     }
     var statusLine: String {
@@ -104,15 +105,16 @@ struct FishModelOption: Identifiable {
         case .unconfigured: return "语音通知助手 · 待配置（未填 API Token 或服务器地址无效）"
         case .invalidToken: return "语音通知助手 · API Token 无效"
         case .unreachable: return "语音通知助手 · 无法连接服务器"
-        case .dbFallback: return "语音通知助手 · 本地库降级运行（数据可能不持久）"
+        case .storageFault: return "语音通知助手 · 本地数据库故障，可靠投递已暂停"
         case .playing: return "语音通知助手 · 播报中"
         case .ok: return "语音通知助手 · 运行中 · 已连接"
         }
     }
 
-    private let db: Persistence
-    private let deviceId: String
-    private var dbFellBack = false
+    // FIX-03：主库失败不再降级到临时库。db 为 nil 即存储故障，可靠处理全部暂停。
+    private var db: Persistence?
+    private var deviceId: String?
+    private let dbPath: String
     private var timer: Timer?
     private var ackTimer: Timer?
     private var polling = false
@@ -131,27 +133,29 @@ struct FishModelOption: Identifiable {
     init() {
         let dir = VoiceStore.appSupportDir()
         let dbURL = dir.appendingPathComponent("notivoice.sqlite")
+        dbPath = dbURL.path
         cacheDir = dir.appendingPathComponent("audio-cache",isDirectory:true)
         diagURL = dir.appendingPathComponent("diagnostic.log")
         historyURL = dir.appendingPathComponent("history.json")
         try? FileManager.default.createDirectory(at:cacheDir,withIntermediateDirectories:true)
-        let persistence: Persistence
-        do { persistence = try Persistence(path: dbURL.path) }
-        catch { dbFellBack = true; persistence = try! Persistence(path: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("notivoice-fallback.sqlite").path) }
-        db = persistence
-        if dbFellBack { health = .dbFallback }
-        deviceId = db.deviceId
-        bootstrapped = (db.getState("bootstrapped") == "1")
+        // FIX-03：主库打开/迁移失败 → 进入存储故障态（红灯 + 可重连），不再创建临时库冒充正常。
+        // 保留原文件，不重建不删除；修复前不拉取、不推进游标、不播报、不发 ACK。
+        do {
+            let p = try Persistence(path: dbURL.path)
+            db = p
+            deviceId = try p.ensureDeviceId()
+            bootstrapped = ((try p.getState("bootstrapped")) ?? "") == "1"
+            migrateHistoryJSON()
+            loadHistoryFromDB()
+            try p.recoverInterrupted()   // 崩溃恢复：playing → queued（T04）
+        } catch {
+            db = nil; deviceId = nil
+            enterStorageFault("数据库打开/初始化失败", error)
+        }
         // 旧版 apiToken 从 UserDefaults 迁移到 Keychain（一次性）
         if let old = UserDefaults.standard.string(forKey:"apiToken"), !old.isEmpty, Keychain.readAPI() == nil {
             Keychain.writeAPI(old); UserDefaults.standard.removeObject(forKey:"apiToken")
         }
-        // 旧版 history.json 迁移进 SQLite
-        migrateHistoryJSON()
-        // 加载历史 + 可靠性
-        loadHistoryFromDB()
-        // 崩溃恢复：playing → queued（T04）
-        db.recoverInterrupted()
         // 配置串行播放调度器
         configureCoordinator()
         if #available(macOS 13.0, *) { launchAtLogin = SMAppService.mainApp.status == .enabled }
@@ -162,22 +166,72 @@ struct FishModelOption: Identifiable {
         Task { @MainActor in self.startIfNeeded() }
     }
 
+    // FIX-03：存储故障统一入口（打开失败 / 关键写入失败都会进入）
+    private func enterStorageFault(_ context: String, _ error: Error) {
+        health = .storageFault
+        storageFaultDetail = "\(context)：\(describe(error))"
+        status = "本地数据库故障，可靠投递已暂停。修复后点「重新连接数据库」。"
+    }
+
+    private func describe(_ error: Error) -> String {
+        if let nv = error as? NVError {
+            switch nv {
+            case .openFailed(let rc): return "打开失败 rc=\(rc)"
+            case .execFailed(let m): return "SQL 执行失败：\(m)"
+            case .prepareFailed(let rc, let m): return "prepare 失败 rc=\(rc)：\(m)"
+            case .bindFailed(let rc, let m): return "bind 失败 rc=\(rc)：\(m)"
+            case .stepFailed(let rc, let m): return "step 失败 rc=\(rc)：\(m)"
+            case .unknownJob(let id): return "任务不存在 \(id)"
+            case .notPlaying(let s): return "任务状态非法 \(s)"
+            case .verifyFailed(let m): return "验证失败：\(m)"
+            }
+        }
+        return error.localizedDescription
+    }
+
+    var storageOK: Bool { db != nil && health != .storageFault }
+
+    /// FIX-03：「重新连接数据库」——重新打开原路径；成功后先恢复本地队列与 Outbox，再启动网络拉取。
+    func retryStorage() {
+        guard !storageOK || db == nil else { return }
+        do {
+            let p = try Persistence(path: dbPath)
+            try p.healthProbe()
+            db = p
+            deviceId = try p.ensureDeviceId()
+            bootstrapped = ((try p.getState("bootstrapped")) ?? "") == "1"
+            loadHistoryFromDB()
+            try p.recoverInterrupted()
+            storageFaultDetail = ""
+            health = .checking
+            status = "数据库已重新连接，恢复本地队列…"
+            Task { @MainActor in await self.updateReliability(); await self.poll() }
+        } catch {
+            enterStorageFault("重新连接数据库失败", error)
+        }
+    }
+
     private func migrateHistoryJSON() {
+        guard let db = db else { return }
         guard let data = try? Data(contentsOf:historyURL),
               let old = try? JSONDecoder().decode([HistoryItem].self,from:data), !old.isEmpty else { return }
         for h in old {
-            db.insertHistory(id:h.id, messageId:h.id, action:"auto", engine:"migrated", result:h.result, text:h.text, at:h.timestamp.timeIntervalSince1970)
+            do { try db.insertHistory(id:h.id, messageId:h.id, action:"auto", engine:"migrated", result:h.result, text:h.text, at:h.timestamp.timeIntervalSince1970) }
+            catch { enterStorageFault("历史迁移写入失败", error); return }
         }
         try? FileManager.default.removeItem(at:historyURL)
     }
 
     private func loadHistoryFromDB() {
-        let rows = db.recentHistory(limit:500)
-        history = rows.compactMap { r -> HistoryItem? in
-            guard let id = r["id"] as? String, let text = r["text"] as? String,
-                  let res = r["result"] as? String, let ts = r["occurredAt"] as? TimeInterval else { return nil }
-            return HistoryItem(id:id, text:text, timestamp: Date(timeIntervalSince1970:ts), result:res, voiceSlot:defaultVoiceSlot)
-        }
+        guard let db = db else { return }
+        do {
+            let rows = try db.recentHistory(limit:500)
+            history = rows.compactMap { r -> HistoryItem? in
+                guard let id = r["id"] as? String, let text = r["text"] as? String,
+                      let res = r["result"] as? String, let ts = r["occurredAt"] as? TimeInterval else { return nil }
+                return HistoryItem(id:id, text:text, timestamp: Date(timeIntervalSince1970:ts), result:res, voiceSlot:defaultVoiceSlot)
+            }
+        } catch { enterStorageFault("历史读取失败", error) }
     }
 
     func startIfNeeded() {
@@ -279,6 +333,8 @@ struct FishModelOption: Identifiable {
     // MARK: - 拉取（与本地落库同一事务；GET 不写服务端 fetched_at）
     func poll() async {
         guard !polling else{return}
+        if health == .storageFault { return }          // FIX-03：存储故障期间不拉取、不推进游标
+        guard let db = db, let devId = deviceId else { health = .storageFault; status = "本地数据库不可用"; return }
         if !enabled {health = .paused;status="已暂停";return}
         if !inHours() {health = .offHours;status="不在播报时间内";return}
         if apiToken.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {health = .unconfigured;status="请先在通用设置中填写 API Token";return}
@@ -286,7 +342,7 @@ struct FishModelOption: Identifiable {
         components.path="/api/notifications"
         polling=true;defer{polling=false}
         do {
-            var cursor = db.cursor
+            var cursor = try db.readCursor()          // FIX-01：游标读取失败即存储故障，不得静默归零重拉
             for _ in 0..<40 {
                 components.queryItems=[URLQueryItem(name:"after",value:String(cursor)),URLQueryItem(name:"limit",value:"50")]
                 guard let url=components.url else {throw URLError(.badURL)}
@@ -300,9 +356,14 @@ struct FishModelOption: Identifiable {
                 }
                 let feed=try JSONDecoder().decode(Feed.self,from:data)
                 if !bootstrapped {
-                    // 首次同步只建立基线，不播放历史；分页推进 cursor
-                    cursor=feed.next_cursor;db.setCursor(cursor)
-                    if !feed.has_more || feed.messages.isEmpty {bootstrapped=true;db.setState("bootstrapped","1");status="首次同步完成（不播放历史）";break}
+                    // 首次同步只建立基线，不播放历史；分页推进 cursor（FIX-01：写入 checked，失败上抛）
+                    cursor=feed.next_cursor
+                    try db.setCursor(cursor)
+                    if !feed.has_more || feed.messages.isEmpty {
+                        bootstrapped=true
+                        try db.setState("bootstrapped","1")
+                        status="首次同步完成（不播放历史）";break
+                    }
                     continue
                 }
                 if feed.messages.isEmpty {break}
@@ -313,17 +374,21 @@ struct FishModelOption: Identifiable {
                 }
                 let acks = msgs.map { (messageId:$0.id, status:"received", eventId:UUID().uuidString) }
                 // 同一事务：入库 + 建待播任务 + 推进 cursor + 建 received 回执（T03：崩溃可恢复）
-                _ = try db.storePageAndAcks(msgs, newCursor: feed.next_cursor, acks: acks, deviceId: deviceId)
+                _ = try db.storePageAndAcks(msgs, newCursor: feed.next_cursor, acks: acks, deviceId: devId)
                 cursor = feed.next_cursor
                 lastSync = Date()
                 if !feed.has_more {break}
             }
             if bootstrapped { Task { await drain() }; Task { await flushAcks() } }
             await updateReliability()
-            if health != .dbFallback { health = .ok }
+            if health != .storageFault { health = .ok }
             if health != .playing { status = queuedCount > 0 ? "已连接 · 待播 \(queuedCount) 条" : "已连接 · 暂无待播消息" }
         }catch{
-            if health != .invalidToken { health = dbFellBack ? .dbFallback : .unreachable }
+            if let nv = error as? NVError {
+                enterStorageFault("拉取过程持久化失败", nv)   // FIX-01/03：存储错误不得伪装成网络错误
+                return
+            }
+            if health != .invalidToken && health != .storageFault { health = .unreachable }
             if !status.hasPrefix("API Token 无效") {status="连接失败：\(error.localizedDescription)"}
         }
     }
@@ -331,37 +396,48 @@ struct FishModelOption: Identifiable {
     // MARK: - 自动播放（串行调度器；失败指数退避不丢弃；超阈值转 needs_attention）
     private func drain() async {
         guard !draining else{return};draining=true;defer{draining=false}
-        while enabled && inHours() {
-            guard let job = db.dueJobs().first else {break}
-            let slot=min(max(job.voiceSlot,1),3)
-            db.markPlaying(job.messageId)
+        guard let db = db, let devId = deviceId else { return }   // FIX-03：存储故障期间不播报
+        while enabled && inHours() && health != .storageFault {
+            let jobsList: [PlaybackJob]
+            do { jobsList = try db.dueJobs() }
+            catch { enterStorageFault("任务读取失败", error); return }
+            guard let first = jobsList.first else { break }
+            let slot=min(max(first.voiceSlot,1),3)
+            do { try db.markPlaying(first.messageId) }
+            catch { enterStorageFault("标记播放中失败", error); return }
             health = .playing
-            status="正在播报：\(job.text.prefix(20))"
-            let ok=await AudioCoordinator.shared.speak(text: job.text,slot:slot)
+            status="正在播报：\(first.text.prefix(20))"
+            let ok=await AudioCoordinator.shared.speak(text: first.text,slot:slot)
             if ok {
-                db.markCompleted(job.messageId)
-                // 播放完成 → 插入 played 回执 Outbox，由 flushAcks 补发
-                db.enqueueAcks([(job.messageId,"played",UUID().uuidString)], deviceId: deviceId)
-                addHistory(id:job.messageId,text:job.text,result:"已播放 · 音色 #\(slot)",voiceSlot:slot,engine:"fish/system")
+                // FIX-02：completed 与 played 回执同一事务，同生同灭；eventId 持久化于 Outbox，重试复用原 ID
+                do { _ = try db.completeAndEnqueuePlayed(first.messageId, deviceId: devId) }
+                catch { enterStorageFault("播放完成落库失败", error); return }
+                addHistory(id:first.messageId,text:first.text,result:"已播放 · 音色 #\(slot)",voiceSlot:slot,engine:"fish/system")
                 await flushAcks()
             } else {
-                db.markFailed(job.messageId, error:"Fish 与系统 TTS 均失败", threshold:3)
-                addHistory(id:job.messageId,text:job.text,result:"播放失败",voiceSlot:slot,engine:"none")
+                do { try db.markFailed(first.messageId, error:"Fish 与系统 TTS 均失败", threshold:3) }
+                catch { enterStorageFault("失败标记落库失败", error); return }
+                addHistory(id:first.messageId,text:first.text,result:"播放失败",voiceSlot:slot,engine:"none")
                 status="有消息播放失败，可在记录中重播"
             }
         }
         await updateReliability()
-        if health == .playing { health = dbFellBack ? .dbFallback : .ok }
+        if health == .playing { health = .ok }
     }
 
     // MARK: - ACK Outbox 重试（T05：失败持续重试，不改变本地已播放事实）
     func flushAcks() async {
         guard !flushing else {return};flushing=true;defer{flushing=false}
-        let rows=db.undeliveredAcks()
+        guard let db = db else { return }                          // FIX-03：存储故障期间不发 ACK
+        let rows: [AckRow]
+        do { rows = try db.undeliveredAcks() }
+        catch { enterStorageFault("ACK Outbox 读取失败", error); return }
         for row in rows {
             let ok=await postReceipt(row)
-            if ok { db.markAckDelivered(row.eventId) }
-            else { db.bumpAckAttempt(row.eventId, nextRetryAt: Date().timeIntervalSince1970 + 15) }
+            do {
+                if ok { try db.markAckDelivered(row.eventId) }
+                else { try db.bumpAckAttempt(row.eventId, nextRetryAt: Date().timeIntervalSince1970 + 15) }
+            } catch { enterStorageFault("ACK 状态更新失败", error); return }
         }
         await updateReliability()
     }
@@ -373,20 +449,26 @@ struct FishModelOption: Identifiable {
         var req=URLRequest(url:url);req.httpMethod="POST";req.timeoutInterval=10
         req.setValue("application/json",forHTTPHeaderField:"Content-Type")
         req.setValue("Bearer \(apiToken.trimmingCharacters(in:.whitespacesAndNewlines))",forHTTPHeaderField:"Authorization")
-        req.httpBody=try? JSONSerialization.data(withJSONObject:["device_id":deviceId,"message_id":row.messageId,"status":row.status,"event_id":row.eventId])
+        req.httpBody=try? JSONSerialization.data(withJSONObject:["device_id":row.deviceId,"message_id":row.messageId,"status":row.status,"event_id":row.eventId])
         guard let (_,res)=try? await URLSession.shared.data(for:req) else {return false}
-        return (res as? HTTPURLResponse)?.statusCode==200
+        let code=(res as? HTTPURLResponse)?.statusCode ?? 0
+        return code==200 || code==409 || code==404   // 409/404：服务端已判定冲突或消息不存在，视为终态，不再重试
     }
 
     func retryAttentionAll() {
-        for j in db.needAttentionJobs() { db.retryAttention(j.messageId) }
+        guard let db = db else { return }
+        do {
+            for j in try db.needAttentionJobs() { try db.retryAttention(j.messageId) }
+        } catch { enterStorageFault("人工重试落库失败", error); return }
         Task { await drain() }
     }
 
     private func updateReliability() async {
-        let q=db.dueJobs().count
-        let a=db.failedCount
-        let ack=db.pendingAckCount()
+        guard let db = db else { return }
+        // UI 计数为展示性读取：失败保持上一拍数值（控制流读取已在 poll/drain/flushAcks 中严格校验）
+        let q=(try? db.dueJobs().count) ?? queuedCount
+        let a=(try? db.needAttentionJobs().count) ?? attentionCount
+        let ack=(try? db.pendingAckCount()) ?? ackPending
         queuedCount=q; attentionCount=a; ackPending=ack
     }
 
@@ -402,7 +484,19 @@ struct FishModelOption: Identifiable {
         let item=HistoryItem(id:id,text:text,timestamp:Date(),result:result,voiceSlot:voiceSlot)
         history.insert(item,at:0)
         if history.count>500 {history=Array(history.prefix(500))}
-        db.insertHistory(id:id, messageId:id, action:"auto", engine:engine, result:result, text:text)
+        // FIX-01：历史写入 checked。历史属审计信息：失败不中断投递，但必须暴露而不是吞掉。
+        guard let db = db else { return }
+        do { try db.insertHistory(id:id, messageId:id, action:"auto", engine:engine, result:result, text:text) }
+        catch {
+            appendDiag("历史写入失败：\(describe(error))")
+            if !status.hasPrefix("本地数据库故障") { status = "已播放，但历史记录写入失败（详见诊断日志）" }
+        }
+    }
+
+    private func appendDiag(_ line: String) {
+        let stamped = "\(ISO8601DateFormatter().string(from: Date())) \(line)\n"
+        if let h = FileHandle(forWritingAtPath: diagURL.path) { h.seekToEndOfFile(); h.write(stamped.data(using:.utf8)!); try? h.close() }
+        else { try? stamped.data(using:.utf8)?.write(to: diagURL) }
     }
 
     func clearHistory() {
@@ -483,6 +577,14 @@ struct MenuPanel:View {
                 Spacer()
                 Button {NSApp.activate(ignoringOtherApps:true);openWindow(id:"settings")} label:{Image(systemName:"gearshape").font(.system(size:18))}.buttonStyle(.plain).help("打开设置")
             }.padding(16)
+            if store.health == .storageFault {
+                VStack(alignment:.leading,spacing:6) {
+                    Text("本地数据库故障，可靠投递已暂停（不拉取、不播报、不发回执）").font(.caption).bold().foregroundStyle(.red)
+                    Text(store.storageFaultDetail).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
+                    Button("重新连接数据库") { store.retryStorage() }.font(.caption).controlSize(.small)
+                }.padding(.horizontal,16).padding(.vertical,10).frame(maxWidth:.infinity,alignment:.leading)
+                Divider()
+            }
             Divider()
             HStack(spacing:8) {Text("已播放记录").font(.subheadline).bold();Spacer();if showClearConfirm {Button("取消"){showClearConfirm=false}.font(.caption).foregroundStyle(.secondary);Button{store.clearHistory();showClearConfirm=false}label:{Text("确认清空").font(.caption).bold()}.foregroundStyle(.red)}else{Button("清空记录"){showClearConfirm=true}.font(.caption).foregroundStyle(.secondary)};Text("\(store.history.filter{Calendar.current.isDateInToday($0.timestamp)}.count) 条（今日）").font(.caption).foregroundStyle(.secondary)}.padding(.horizontal,16).padding(.vertical,10)
             ScrollView {
