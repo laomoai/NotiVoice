@@ -29,14 +29,20 @@ for arg in "$@"; do
   if [ "$arg" = "--no-open" ]; then NO_OPEN=1; fi
 done
 ICON="$PWD/../assets/logo/NotiVoice-${VARIANT}.icns"
+# 图标是发布包的一部分：缺文件直接失败，禁止静默退化为 Finder 的默认白方块
+if [ ! -f "$ICON" ]; then
+  echo "✗ 缺少图标源文件：$ICON" >&2
+  echo "  请补齐 assets/logo 后重新出包（不允许无图标发布）。" >&2
+  exit 1
+fi
 # 干净重建：让 .app 目录自身 mtime 同步更新，Finder 里显示的修改时间才准确
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/NotiVoice "$APP/Contents/MacOS/NotiVoice"
-if [ -f "$ICON" ]; then
-  cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
-else
-  echo "提示：未找到 $ICON，App 将使用系统默认图标"
+cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
+if [ ! -s "$APP/Contents/Resources/AppIcon.icns" ]; then
+  echo "✗ 图标写入失败：AppIcon.icns 为空或不存在" >&2
+  exit 1
 fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -60,6 +66,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 chmod +x "$APP/Contents/MacOS/NotiVoice"
-echo "构建完成：$APP"
+# 干净重建会换 inode，Finder/IconServices 可能仍显示旧缓存（白色默认方块）；主动重新注册
+LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREG" ]; then "$LSREG" -force -R -f "$APP" >/dev/null 2>&1 || true; fi
+echo "构建完成：$APP（图标已注册刷新）"
 echo "版本 V${APP_VERSION} · build ${BUILD_NUMBER} · 标识 ${GIT_COMMIT} · ${VARIANT} · ${BUILD_TIME} · dirty=${GIT_DIRTY}"
 if [ "$NO_OPEN" -eq 0 ]; then open "$APP"; fi

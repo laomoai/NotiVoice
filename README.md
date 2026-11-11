@@ -28,7 +28,7 @@ macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意�
 
 1. **只改 `VERSION` 一处**。禁止在 UI、HTML 页脚、文档里写死精确版本号（`V1.1` 这类里程碑标记可保留）。
 2. **自动注入**（无需手改）：
-   - `mac/build-app.command` 读 `VERSION` → 写入 `Info.plist`（`CFBundleShortVersionString`、`CFBundleVersion` UTC 时间戳、`NVGitCommit`、`NVBuildTime`、`NVBuildVariant`、`NVGitDirty`）；「设置 → 关于」页动态显示 `V版本 · build · 标识 · 渠道 · 构建时间`，带「复制版本信息」按钮。
+   - `mac/build-app.command` 读 `VERSION` → 写入 `Info.plist`（`CFBundleShortVersionString`、`CFBundleVersion` UTC 时间戳、`NVGitCommit`、`NVBuildTime`、`NVBuildVariant`、`NVGitDirty`）；「设置 → 关于」页动态显示 `V版本 · build · 标识 · 渠道 · 构建时间`，带「复制版本信息」按钮；出包时**图标源文件缺失直接构建失败**，并在构建后重新注册 LaunchServices（避免 Finder 缓存把图标显示成默认白方块）。
    - `cloudflare/build.mjs` 读 `VERSION` → 把页面里的 `{{APP_VERSION}}` 替换成当前版本；**新增页面必须带该占位符**，否则构建直接失败。
 3. **手工同步**（校验脚本会卡住漏改）：`README.md` 头部「当前版本」、`docs/API.md` / `docs/ARCHITECTURE.md` 标题、`docs/TESTING.md` 首行「适用版本」、`CHANGELOG.md` 新增 `## Vx.y.z（日期）` 条目（历史条目保留）、源码/脚本头部的精确版本注释、所有页面可见版本。
 4. **重新构建并部署**：`bash mac/build-app.command --no-open` → `cd cloudflare && npm run build && npm run deploy` → `wrangler secret list` 核对 secrets 未被部署覆盖。
