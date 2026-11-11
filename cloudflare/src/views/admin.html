@@ -185,13 +185,17 @@ document.querySelector('#slot').onchange=buildCmd;
 copy.onclick=async()=>{if(!verified||!cmdReady)return;try{await navigator.clipboard.writeText(cmd.textContent);copy.textContent='已复制 ✓'}catch(e){copy.textContent='请手动复制'}};
 function fmt(s){return s?String(s).replace('T',' ').replace('Z','').slice(0,19):''}
 function shortId(s){return s?s.slice(0,8):''}
-// 按设备回执判定单条消息状态：任一设备 played → 已播报；否则任一设备 received → 已送达；否则未送达
+// 状态判定优先级：设备回执 > 旧版字段（V1.0 客户端只发 {"seqs":[...]}，只写 messages.played_at/fetched_at）
+// 返回 played | played-legacy | received | fetched-legacy | none
 function msgStatus(m){
   const rc=m.receipts||[];
   if(rc.some(r=>r.status==='played'))return 'played';
   if(rc.some(r=>r.status==='received'))return 'received';
+  if(m.played_at)return 'played-legacy';
+  if(m.fetched_at)return 'fetched-legacy';
   return 'none';
 }
+const isPlayed=s=>s==='played'||s==='played-legacy';
 async function loadAudit(){
   try{
     const r=await fetch(API_BASE+'/api/admin/audit',{headers:{Authorization:'Bearer '+ti.value.trim()}});
@@ -222,17 +226,21 @@ async function load(){
   }
   verified=true;tools.classList.add('show');buildCmd();loadAudit();
   let msgs=j.messages||[];
-  const played=msgs.filter(x=>msgStatus(x)==='played').length,
+  const playedN=msgs.filter(x=>msgStatus(x)==='played').length,
+        legacyN=msgs.filter(x=>msgStatus(x)==='played-legacy').length,
         recv=msgs.filter(x=>msgStatus(x)==='received').length,
+        fetchedN=msgs.filter(x=>msgStatus(x)==='fetched-legacy').length,
         none=msgs.filter(x=>msgStatus(x)==='none').length;
-  st.textContent='共 '+msgs.length+' 条  ·  已播报(任一设备) '+played+'  ·  已送达未播 '+recv+'  ·  未送达 '+none;
-  if(document.querySelector('#unplayed').checked)msgs=msgs.filter(x=>msgStatus(x)!=='played');
+  st.textContent='共 '+msgs.length+' 条  ·  已播报(设备回执) '+playedN+'  ·  已播报(旧版回执) '+legacyN+'  ·  已送达未播 '+recv+'  ·  已拉取未播(旧版) '+fetchedN+'  ·  未送达 '+none;
+  if(document.querySelector('#unplayed').checked)msgs=msgs.filter(x=>!isPlayed(msgStatus(x)));
   ls.replaceChildren(...msgs.map(x=>{
    const li=document.createElement('li');li.className='msg';
    const line=document.createElement('div'),badge=document.createElement('span'),txt=document.createElement('span'),meta=document.createElement('div');
    const ss=msgStatus(x);
    if(ss==='played'){badge.className='badge ok';badge.textContent='已播报 · 任一设备'}
+   else if(ss==='played-legacy'){badge.className='badge ok';badge.textContent='已播报 · 旧版回执'}
    else if(ss==='received'){badge.className='badge read';badge.textContent='已送达 · 未播报'}
+   else if(ss==='fetched-legacy'){badge.className='badge read';badge.textContent='已拉取 · 未播报(旧版)'}
    else{badge.className='badge new';badge.textContent='未送达'}
    const bodyText=x.content||x.title||x.text;
    txt.textContent=bodyText;line.className='line';line.append(badge,txt);
@@ -252,6 +260,16 @@ async function load(){
        row.append(dev,rst,t1,t2);box.append(row);
      }
      li.append(box);
+   }else if(x.played_at||x.fetched_at){
+     const box=document.createElement('div');box.className='receipts';
+     const rh=document.createElement('div');rh.className='rhead';rh.textContent='旧版回执（无设备维度）';
+     box.append(rh);
+     const row=document.createElement('div');row.className='rcpt';
+     const t1=document.createElement('span');t1.textContent=x.fetched_at?('拉取 '+fmt(x.fetched_at)):'';
+     const t2=document.createElement('span');t2.textContent=x.played_at?('· 播报完成 '+fmt(x.played_at)):'';
+     row.append(t1,t2);box.append(row);
+     const hint=document.createElement('div');hint.className='rcpt';hint.textContent='该客户端未上报设备回执（V1.0 只回 {"seqs":[...]}）；升级到 V1.1 客户端后按设备显示。';
+     box.append(hint);li.append(box);
    }
    return li;
   }));
