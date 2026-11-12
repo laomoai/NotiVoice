@@ -20,8 +20,29 @@ const injectVersion = (name, raw) => {
   }
   return raw.replaceAll('{{APP_VERSION}}', version);
 };
-const landing = injectVersion('landing', readFileSync(join(src, 'views', 'landing.html'), 'utf8'));
-const admin = injectVersion('admin', readFileSync(join(src, 'views', 'admin.html'), 'utf8'));
+
+// 全仓唯一显示时区源：根目录 TIMEZONE（跳过 # 注释与空行）。数据层仍存 UTC ISO 8601 Z。
+const tz = readFileSync(join(__dirname, '..', 'TIMEZONE'), 'utf8')
+  .split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#'));
+if (!tz) { console.error('✗ TIMEZONE 为空：必须写一行 IANA 时区名，如 Asia/Shanghai'); process.exit(1); }
+try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); }
+catch (e) { console.error('✗ TIMEZONE 不是合法 IANA 时区名：' + tz); process.exit(1); }
+const timeJs = readFileSync(join(src, 'views', 'time.js'), 'utf8').replaceAll('__DISPLAY_TZ__', tz);
+if (timeJs.includes('__DISPLAY_TZ__')) { console.error('✗ time.js 时区占位符未替换'); process.exit(1); }
+const injectTime = (name, raw) => {
+  if (name === 'admin' && !raw.includes('{{TIME_FORMAT_JS}}')) {
+    console.error('✗ admin.html 缺少 {{TIME_FORMAT_JS}}：时间显示必须走统一格式化函数');
+    process.exit(1);
+  }
+  return raw.replaceAll('{{TIME_FORMAT_JS}}', timeJs).replaceAll('{{DISPLAY_TZ}}', tz);
+};
+const landing = injectTime('landing', injectVersion('landing', readFileSync(join(src, 'views', 'landing.html'), 'utf8')));
+const admin = injectTime('admin', injectVersion('admin', readFileSync(join(src, 'views', 'admin.html'), 'utf8')));
+for (const [name, raw] of [['landing', landing], ['admin', admin]]) {
+  if (raw.includes('{{TIME_FORMAT_JS}}') || raw.includes('{{DISPLAY_TZ}}')) {
+    console.error(`✗ ${name}.html 仍有未替换的时区占位符`); process.exit(1);
+  }
+}
 let worker = readFileSync(join(src, 'index.js'), 'utf8');
 
 // JSON.stringify 会转义 HTML 内的双引号/换行，注入为合法 JS 字符串字面量
@@ -37,4 +58,4 @@ if (worker.includes('__LANDING_HTML__') || worker.includes('__ADMIN_HTML__')) {
 const outDir = join(__dirname, 'dist');
 mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, 'worker.js'), worker);
-console.log(`✓ build 完成 -> dist/worker.js  (v${version}; landing ${landing.length}B, admin ${admin.length}B)`);
+console.log(`✓ build 完成 -> dist/worker.js  (v${version}; 显示时区 ${tz}; landing ${landing.length}B, admin ${admin.length}B)`);

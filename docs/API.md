@@ -1,4 +1,4 @@
-# Noti Voice API（当前版本 V1.1.3）
+# Noti Voice API（当前版本 V1.1.4）
 
 > **接口根地址（Base URL）**：`https://notivoice.laomo.app`。下文所有 `/api/...` 路径均为相对该根地址，实际请求需拼接完整 URL，例如 `https://notivoice.laomo.app/api/notifications`。切勿只写 `/api/notifications`（curl 会报 `No host part in the URL`）。
 
@@ -105,6 +105,12 @@ V1.1 把 Token 拆成两个，互相拒绝：
 curl -X POST 'https://notivoice.laomo.app/api/admin/notifications/clear' \
   -H 'Authorization: Bearer 你的ADMIN_TOKEN'
 ```
+
+## 时间字段约定（V1.1.4）
+
+所有时间字段（`created_at`、`received_at`、`played_at`、`fetched_at`、`admin_audit.created_at`）都是 **UTC ISO 8601**（`YYYY-MM-DDTHH:mm:ssZ`，或带毫秒）。上文示例里的 `"..."` 只是省略值，实际响应一定带 `Z`；`POST /ack` 也不接受客户端本地时间。
+
+客户端与后台展示时统一按仓库根目录 `TIMEZONE`（默认 `Asia/Shanghai`，UTC+8）转换，因此后台看到的「投递 09:02:42」在 JSON 里是 `2026-11-12T01:02:42Z`，相差 8 小时属预期行为。改显示时区不需要改接口、不需要迁移数据，重新构建两端即可。
 
 ## curl 测试
 

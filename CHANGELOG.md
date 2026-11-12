@@ -1,5 +1,22 @@
 # 更新日志
 
+## V1.1.4（2026-11-12）
+
+时间显示统一：修掉「客户端北京时间 / 后台 UTC」相差 8 小时的问题，并把显示时区做成单一可配置来源。接口与数据结构不变。
+
+| 项 | 内容 |
+| --- | --- |
+| 单一配置源 | 新增根目录 `TIMEZONE`（默认 `Asia/Shanghai` = 北京时间 UTC+8）；改这一行即可全端切换，UTC 偏移由 `Intl` / `TimeZone` 按当前日期动态计算，支持夏令时 |
+| 后台 | 删除「去掉 Z 直接显示」的 `fmt()`，改由 `views/time.js`（构建时注入）按配置时区转换；新增提示条显示当前时区与「接口/数据库保存 UTC」；落地页页脚标注时区；后台缺 `{{TIME_FORMAT_JS}}` 直接构建失败 |
+| 客户端 | 新增 `DisplayClock.swift`（时区从 `Info.plist` 的 `NVDisplayTimezone` 读，出包脚本从 `TIMEZONE` 注入）；静音窗口判断、今日计数、播放记录、最近同步、两处诊断日志、运行时间页、关于页与「复制版本信息」全部统一，不再硬编码 `Asia/Shanghai` |
+| 数据层 | **不变**：D1 / API 仍为 UTC ISO 8601 Z，本地 SQLite 仍为 UTC 绝对时刻；无需迁移，接口契约不变 |
+| 门禁 | `scripts/check-version.py` 增加时区一致性检查（配置合法性、注入链路、Worker 产物、客户端 plist），与版本门禁一起卡住「改了配置没重建」 |
+
+验证：`node scripts/test-timezone.mjs` **15/15**；`swift test --disable-sandbox` **33/33**（新增 `TimezoneTests` 5 例）；`scripts/check-version.py` 全项 ALL PASS（含时区）；Worker 集成 `test-worker.sh` 21/21 复跑；生产页面与客户端产物时区一致。
+
+**未验证 / 边界**：真实 D1 与 GUI 长时挂机沿用 V1.1.2/V1.1.3 证据，本次未复跑；时区改动只影响展示，未做跨时区设备同时在线的实机联调。不得据此宣称完成长期无人值守验收。
+
+
 ## V1.1.3（2026-11-12）
 
 增量静态审查（`a231652..d0a4107`）发现的 3 项 P1 + 1 项 P2 缺陷修复；不改 V1.1.2 架构与接口契约。

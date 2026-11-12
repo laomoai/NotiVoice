@@ -1,4 +1,4 @@
-# 架构设计（当前版本 V1.1.3）
+# 架构设计（当前版本 V1.1.4）
 
 ## 组件
 
@@ -64,6 +64,10 @@
 - 备用入口：`*.workers.dev`（`workers_dev = true` 保留）。
 - D1 绑定 `DB`，`database_id` 写在 `wrangler.toml`；新库用 `schema.sql`，已有库用 `migrations/001`、`002`、`003` 增量补齐列与新建表。
 - Token 通过 `wrangler secret put API_TOKEN` / `wrangler secret put ADMIN_TOKEN` 配置，不在仓库中。
+
+## 时间与时区（V1.1.4）
+
+存储与传输只用 UTC：D1 `strftime('%Y-%m-%dT%H:%M:%fZ','now')` / Worker `new Date().toISOString()`，客户端 SQLite 用 UTC epoch。展示层由根目录 `TIMEZONE` 单点控制：`cloudflare/build.mjs` 把 `views/time.js` 注入 `admin.html`（`fmt()` 用 `Intl` 按配置时区转换），`mac/build-app.command` 把同一值写入 `Info.plist` 的 `NVDisplayTimezone`，客户端 `DisplayClock` 统一格式化。两端构建产物由 `scripts/check-version.py` 校验一致，改时区不会只生效一半。
 
 ## 回滚与备份
 

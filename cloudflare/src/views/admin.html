@@ -106,6 +106,7 @@
     </div>
 
     <div id="status" class="status">请先输入 ADMIN_TOKEN 并点击「验证并加载」。</div>
+    <div class="tip" id="tzbar">时间显示时区：加载中…</div>
 
     <ul id="list"></ul>
 
@@ -153,6 +154,7 @@
 </div>
 
 <script>
+{{TIME_FORMAT_JS}}
 // 草稿阶段：本地预览（localhost/file）连线上 API；部署到 notivoice.laomo.app 后走同源
 const isLocal = location.protocol==='file:' || location.hostname==='localhost' || location.hostname==='127.0.0.1';
 // 页面自身 fetch 用同源相对路径（部署后为空）；本地预览连线上
@@ -183,7 +185,7 @@ apiIn.addEventListener('input',()=>{try{localStorage.setItem('nv_api_token',apiI
 toggleApi.onclick=()=>{const on=apiIn.type==='password';apiIn.type=on?'text':'password';toggleApi.textContent=on?'隐藏':'显示'};
 document.querySelector('#slot').onchange=buildCmd;
 copy.onclick=async()=>{if(!verified||!cmdReady)return;try{await navigator.clipboard.writeText(cmd.textContent);copy.textContent='已复制 ✓'}catch(e){copy.textContent='请手动复制'}};
-function fmt(s){return s?String(s).replace('T',' ').replace('Z','').slice(0,19):''}
+// fmt(s) / nvZoneLabel() 由 build.mjs 注入的 time.js 提供；显示时区来自根目录 TIMEZONE
 function shortId(s){return s?s.slice(0,8):''}
 // 状态判定优先级：设备回执 > 旧版字段（V1.0 客户端只发 {"seqs":[...]}，只写 messages.played_at/fetched_at）
 // 返回 played | played-legacy | received | fetched-legacy | none
@@ -281,6 +283,7 @@ document.querySelector('#unplayed').onchange=load;
 const clearBtn=document.querySelector('#clear'),clearSt=document.querySelector('#clearst');
 clearBtn.onclick=async()=>{ if(!confirm('确定清空服务器上全部消息吗？此操作不可恢复，会一并删除设备回执与回执事件。'))return; clearSt.textContent='清空中…'; try{ const r=await fetch(API_BASE+'/api/admin/notifications/clear',{method:'POST',headers:{Authorization:'Bearer '+ti.value.trim()}}); const j=await r.json(); if(!r.ok){clearSt.textContent='清空失败（HTTP '+r.status+'）';return} clearSt.textContent='已清空 '+j.deleted+' 条'; load(); }catch(e){clearSt.textContent='清空失败：'+e.message} };
 setInterval(()=>{if(document.querySelector('#auto').checked&&ti.value.trim())load()},5000);
+document.querySelector('#tzbar').textContent='本页所有时间均显示为 '+nvZoneLabel()+'；接口与数据库保存 UTC（ISO 8601 Z）。';
 </script>
 </body>
 </html>

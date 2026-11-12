@@ -1,0 +1,6 @@
+# NotiVoice 全局显示时区（唯一来源，IANA 时区名）
+# 默认 Asia/Shanghai = 北京时间 UTC+8。改用其它时区只改下面这一行，
+# 然后重新构建：cd cloudflare && npm run build && npm run deploy
+#                bash mac/build-app.command --no-open
+# 数据层（D1 / API / 本地 SQLite）始终保存 UTC ISO 8601（带 Z），此文件只影响展示。
+Asia/Shanghai

@@ -1,6 +1,6 @@
 # Noti Voice
 
-> 当前版本：**V1.1.3**（唯一版本源：根目录 `VERSION` 文件）。改版本号必须同步全部文档与页面，并执行 `python3 scripts/check-version.py`；见下方「版本发布规则」。
+> 当前版本：**V1.1.4**（唯一版本源：根目录 `VERSION` 文件）。改版本号必须同步全部文档与页面，并执行 `python3 scripts/check-version.py`；见下方「版本发布规则」。
 
 macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意系统的文本通知（交易提醒、监控告警、定时播报等）通过简单的 HTTP 接口推送到 Mac，由菜单栏 App 自动朗读出来。后端无服务器、零运维；客户端纯 SwiftUI，自托管可控。
 
@@ -24,7 +24,7 @@ macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意�
 
 ## 版本发布规则（全局约定：改版本号必须全量同步）
 
-**唯一版本源**：仓库根目录 `VERSION`（如 `1.1.3`）。升版本时按下面顺序执行，缺一不可：
+**唯一版本源**：仓库根目录 `VERSION`（如 `1.1.4`）。升版本时按下面顺序执行，缺一不可：
 
 1. **只改 `VERSION` 一处**。禁止在 UI、HTML 页脚、文档里写死精确版本号（`V1.1` 这类里程碑标记可保留）。
 2. **自动注入**（无需手改）：
@@ -37,6 +37,18 @@ macOS 菜单栏语音播报客户端 + Cloudflare Worker/D1 后端。把任意�
 排查「实际跑的是哪版」一律以客户端「设置 → 关于」页为准；Finder 显示的是 `.app` 目录 mtime，构建脚本干净重建保证其更新。
 
 关于页的 `标识 xxxxxxx` 是**构建那一刻的源码 commit**，不等于仓库当前 HEAD——之后只改文档或构建脚本时，客户端二进制没变，标识自然保持原值（这是预期行为，不是漏同步）；`NVGitDirty=yes` 才表示构建时源码存在未提交改动。判断「客户端代码是否是最新」应比对 `git diff <标识>..HEAD -- mac/NotiVoice/`，为空即源码一致。
+
+## 时间与时区（统一显示规则）
+
+- **数据层一律 UTC**：D1 / API 的 `created_at`、`received_at`、`played_at`、`fetched_at`、`admin_audit.created_at` 都是 ISO 8601 UTC（带 `Z`）；客户端本地 SQLite 存 `timeIntervalSince1970`（UTC 绝对时刻）。这是接口契约，不随时区配置改变，已有数据无需迁移。
+- **展示层一律按 `TIMEZONE`**：后台的投递 / 接收 / 播放 / 审计时间，客户端的播放记录 / 最近同步 / 运行时间窗口 / 诊断日志 / 关于页，全部按同一时区渲染为 `YYYY-MM-DD HH:mm:ss`。后台提示条与客户端「关于」页会显示当前时区及动态 UTC 偏移（如 `Asia/Shanghai（UTC+8）`）。
+- **改时区只改一处**：编辑根目录 `TIMEZONE`（IANA 时区名，默认 `Asia/Shanghai` = 北京时间），然后重新构建两端并部署：
+  ```bash
+  cd cloudflare && npm run build && npm run deploy
+  bash mac/build-app.command --no-open
+  ```
+  改完必须跑 `node scripts/test-timezone.mjs` 与 `python3 scripts/check-version.py`（含时区一致性检查）。
+- 禁止在 UI / 页面里写死 `+8` 或把「北京时间」当换算依据；UTC 偏移由 `Intl` / `TimeZone` 按当前日期动态计算，夏令时时区自动跟随。页面新增时间显示必须复用注入的 `fmt()`，否则 `npm run build` 直接失败。
 
 ## 项目结构
 

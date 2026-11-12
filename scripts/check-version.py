@@ -11,6 +11,10 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+# 显示时区唯一来源：根目录 TIMEZONE（跳过 # 注释与空行）
+_tz_lines = [l.strip() for l in (ROOT / "TIMEZONE").read_text(encoding="utf-8").splitlines()
+             if l.strip() and not l.strip().startswith("#")]
+TZ = _tz_lines[0] if _tz_lines else ""
 FAILED = []
 CHECKS = 0
 
@@ -77,6 +81,8 @@ if app_plist.exists():
     info = plistlib.loads(app_plist.read_bytes())
     check("客户端产物 Info.plist", info.get("CFBundleShortVersionString") == VERSION and "NVGitCommit" in info,
           f"CFBundleShortVersionString={info.get('CFBundleShortVersionString')}, 标识={info.get('NVGitCommit')}")
+    check("客户端产物显示时区", info.get("NVDisplayTimezone") == TZ,
+          f"NVDisplayTimezone={info.get('NVDisplayTimezone')!r}，期望 {TZ!r}")
 else:
     check("客户端产物 Info.plist", False, "尚未出包：运行 bash mac/build-app.command --no-open")
 
@@ -87,6 +93,24 @@ if worker.exists():
           f"含 v{VERSION}={f'v{VERSION}' in w}, 残留占位符={'{{APP_VERSION}}' in w}")
 else:
     check("Worker 产物已注入当前版本", False, "尚未构建：cd cloudflare && npm run build")
+
+# 5) 显示时区一致性：唯一来源 TIMEZONE；注入链路、Worker 产物与客户端 plist 必须用同一值
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+try:
+    ZoneInfo(TZ)
+    tz_valid = bool(TZ)
+except (ZoneInfoNotFoundError, ValueError, TypeError):
+    tz_valid = False
+check("TIMEZONE 为合法 IANA 时区", tz_valid, f"实际 {TZ!r}")
+check("build.mjs 读取 TIMEZONE", "'..', 'TIMEZONE'" in read("cloudflare/build.mjs"))
+check("time.js 含时区注入占位符", "__DISPLAY_TZ__" in read("cloudflare/src/views/time.js"))
+_admin = read("cloudflare/src/views/admin.html")
+check("后台走统一 fmt 注入", "{{TIME_FORMAT_JS}}" in _admin and "function fmt(s){" not in _admin)
+_app = read("mac/build-app.command")
+check("出包脚本注入客户端时区", "NVDisplayTimezone" in _app and "$REPO/TIMEZONE" in _app)
+_w = read("cloudflare/dist/worker.js")
+check("Worker 产物时区已注入", bool(TZ) and ("NV_DISPLAY_TZ = '" + TZ + "'") in _w
+      and "__DISPLAY_TZ__" not in _w and "{{TIME_FORMAT_JS}}" not in _w, f"TZ={TZ!r}")
 
 print(f"\n===== 结果：{CHECKS - len(FAILED)} 通过 / {len(FAILED)} 失败 =====")
 if FAILED:

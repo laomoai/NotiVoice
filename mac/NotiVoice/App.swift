@@ -357,7 +357,7 @@ struct FishModelOption: Identifiable {
 
     private func inHours() -> Bool {
         guard scheduleOn else {return true}
-        var cal=Calendar(identifier:.gregorian);cal.timeZone=TimeZone(identifier:"Asia/Shanghai")!
+        let cal=DisplayClock.shared.calendar
         let c=cal.dateComponents([.hour,.minute],from:Date());let now=(c.hour ?? 0)*60+(c.minute ?? 0)
         func minutes(_ s:String)->Int? {let a=s.split(separator:":").compactMap{Int($0)};guard a.count==2,(0...23).contains(a[0]),(0...59).contains(a[1]) else{return nil};return a[0]*60+a[1]}
         guard let a=minutes(start),let b=minutes(end) else{return false}
@@ -550,7 +550,7 @@ struct FishModelOption: Identifiable {
     }
 
     private func appendDiag(_ line: String) {
-        let stamped = "\(ISO8601DateFormatter().string(from: Date())) \(line)\n"
+        let stamped = "\(DisplayClock.shared.logStamp()) \(line)\n"
         if let h = FileHandle(forWritingAtPath: diagURL.path) { h.seekToEndOfFile(); h.write(stamped.data(using:.utf8)!); try? h.close() }
         else { try? stamped.data(using:.utf8)?.write(to: diagURL) }
     }
@@ -596,7 +596,7 @@ struct FishModelOption: Identifiable {
 
     private func logDiagnostic(_ line:String) {
         let prev=(try? String(contentsOf:diagURL,encoding:.utf8)) ?? ""
-        let next=String((prev + "\(Date()) \(line)\n").suffix(20000))
+        let next=String((prev + "\(DisplayClock.shared.logStamp()) \(line)\n").suffix(20000))
         try? next.write(to:diagURL,atomically:true,encoding:.utf8)
     }
 }
@@ -651,7 +651,7 @@ struct MenuPanel:View {
                 Divider()
             }
             Divider()
-            HStack(spacing:8) {Text("已播放记录").font(.subheadline).bold();Spacer();if showClearConfirm {Button("取消"){showClearConfirm=false}.font(.caption).foregroundStyle(.secondary);Button{store.clearHistory();showClearConfirm=false}label:{Text("确认清空").font(.caption).bold()}.foregroundStyle(.red)}else{Button("清空记录"){showClearConfirm=true}.font(.caption).foregroundStyle(.secondary)};Text("\(store.history.filter{Calendar.current.isDateInToday($0.timestamp)}.count) 条（今日）").font(.caption).foregroundStyle(.secondary)}.padding(.horizontal,16).padding(.vertical,10)
+            HStack(spacing:8) {Text("已播放记录").font(.subheadline).bold();Spacer();if showClearConfirm {Button("取消"){showClearConfirm=false}.font(.caption).foregroundStyle(.secondary);Button{store.clearHistory();showClearConfirm=false}label:{Text("确认清空").font(.caption).bold()}.foregroundStyle(.red)}else{Button("清空记录"){showClearConfirm=true}.font(.caption).foregroundStyle(.secondary)};Text("\(store.history.filter{DisplayClock.shared.calendar.isDateInToday($0.timestamp)}.count) 条（今日）").font(.caption).foregroundStyle(.secondary)}.padding(.horizontal,16).padding(.vertical,10)
             ScrollView {
                 LazyVStack(spacing:0) {
                     if store.history.isEmpty {VStack(spacing:8){Image(systemName:"waveform").font(.system(size:28)).foregroundStyle(.secondary);Text("暂无播放记录").font(.subheadline).foregroundStyle(.secondary);Text("首次同步只建立基线，新消息会自动播报").font(.caption).foregroundStyle(.secondary)}.frame(maxWidth:.infinity).padding(.vertical,36)}
@@ -660,7 +660,7 @@ struct MenuPanel:View {
                             Button {store.replay(h)} label:{Image(systemName:"play.circle.fill").font(.system(size:25)).foregroundStyle(.blue)}.buttonStyle(.plain).help("重播")
                             VStack(alignment:.leading,spacing:4){Text(h.text).font(.subheadline).lineLimit(2);Text(h.result).font(.caption2).foregroundStyle(h.result.hasPrefix("已播放") ? Color.green : (h.result.contains("失败") ? Color.orange : Color.secondary))}
                             Spacer(minLength:4)
-                            Text(h.timestamp,style:.time).font(.caption2).foregroundStyle(.secondary)
+                            Text(DisplayClock.shared.time(h.timestamp)).font(.caption2).foregroundStyle(.secondary).help(DisplayClock.shared.label)
                         }.padding(.horizontal,16).padding(.vertical,11)
                         Divider().padding(.leading,48)
                     }
@@ -672,7 +672,7 @@ struct MenuPanel:View {
                 ReliChip(label:"待播", value:store.queuedCount, color:.blue)
                 ReliChip(label:"失败待处理", value:store.attentionCount, color:.orange)
                 ReliChip(label:"ACK待发", value:store.ackPending, color:.purple)
-                if let ls=store.lastSync { Text("最近同步 \(ls,style:.time)").font(.caption2).foregroundStyle(.secondary) }
+                if let ls=store.lastSync { Text("最近同步 \(DisplayClock.shared.time(ls))").font(.caption2).foregroundStyle(.secondary) }
                 if store.attentionCount>0 { Button("重试"){store.retryAttentionAll()}.font(.caption).foregroundStyle(.orange) }
             }.padding(.horizontal,16).padding(.vertical,8)
             Divider()
@@ -782,7 +782,7 @@ struct SettingsWindow:View {
                     Text("缓存按「文本 + 模型 + 音色」分别保存，最多 100 条，超出按最旧淘汰；换模型或音色会自动重新生成。检测会向每个候选模型发送 2 个字的测试请求；账户若有付费额度，探测付费模型可能产生极小费用，实际以官方账单为准。未设置 Key 或 Fish Audio 不可用时，使用 macOS 系统语音兜底。").font(.caption).foregroundStyle(.secondary)
                 } else if tab=="schedule" {
                     Toggle("启用运行时间限制",isOn:$store.scheduleOn)
-                    Text("时区：北京时间（Asia/Shanghai）").foregroundStyle(.secondary)
+                    Text("时区：\(DisplayClock.shared.label)").foregroundStyle(.secondary)
                     HStack {Text("开始时间");Spacer();TextField("08:30",text:$store.start).frame(width:100).textFieldStyle(.roundedBorder)}
                     HStack {Text("结束时间");Spacer();TextField("23:00",text:$store.end).frame(width:100).textFieldStyle(.roundedBorder)}
                     Text("运行时间之外不拉取消息；恢复运行后会继续补拉。支持跨午夜时间段，格式 HH:mm。").font(.caption).foregroundStyle(.secondary)
@@ -793,13 +793,14 @@ struct SettingsWindow:View {
                         HStack(spacing:10) {
                             Button("复制版本信息") {
                                 NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(buildStamp,forType:.string)
+                                NSPasteboard.general.setString("\(buildStamp) · 显示时区 \(DisplayClock.shared.label)",forType:.string)
                                 copiedVersion=true
                             }.font(.caption)
                             if copiedVersion {Text("已复制，可直接贴给开发者").font(.caption2).foregroundStyle(.green)}
                             Text("以本页为准确认实际运行的版本").font(.caption2).foregroundStyle(.secondary)
                         }
                     }
+                    Text("显示时区：\(DisplayClock.shared.label) · 服务端与本地数据库保存 UTC（ISO 8601 Z）").font(.caption).foregroundStyle(.secondary)
                     Text("macOS 13+ · Apple Silicon · SwiftUI")
                     Text("Cloudflare Worker + D1 · Fish Audio · 本地 SQLite 持久化")
                     Text("本软件是未签名源码构建测试版，不保证电脑休眠、系统静音时发声。").font(.caption).foregroundStyle(.secondary)

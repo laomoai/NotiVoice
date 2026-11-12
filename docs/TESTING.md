@@ -1,17 +1,17 @@
 # 本地联调验收清单
 
-> 适用版本：**V1.1.3** —— 双 Token 鉴权（`API_TOKEN` / `ADMIN_TOKEN` 互相拒绝）、设备级回执（received / played，幂等、单调、多设备隔离）、客户端 SQLite 持久化与 At-Least-Once 投递、四项可靠性修复（FIX-01~04）、三音色槽位、本机音频缓存。
+> 适用版本：**V1.1.4** —— 双 Token 鉴权（`API_TOKEN` / `ADMIN_TOKEN` 互相拒绝）、设备级回执（received / played，幂等、单调、多设备隔离）、客户端 SQLite 持久化与 At-Least-Once 投递、四项可靠性修复（FIX-01~04）、三音色槽位、本机音频缓存。
 >
 > 主验收已固化为四套可重复执行的测试：
 > - **Worker 集成测试**：`bash cloudflare/test-worker.sh`（对本地 `wrangler dev`，覆盖 T01/T06/T12/T13/T14/T16/T19/T20/T21 + 旧接口兼容 + 错误码，**21/21 通过**）
-> - **客户端单元测试**：`cd mac && swift test --disable-sandbox`（**28/28 通过** = `PersistenceTests` 14 例 + `FaultInjectionTests` 6 例 + `SoakTests` 1 例 + `ReliabilityFixTests` 7 例；覆盖事务原子性、COMMIT 回滚、完成与 Played Outbox 同事务、权限拒绝/损坏/SQLITE_FULL/COMMIT 失败故障注入、120 轮重开库循环）
+> - **客户端单元测试**：`cd mac && swift test --disable-sandbox`（**33/33 通过** = `PersistenceTests` 14 例 + `FaultInjectionTests` 6 例 + `SoakTests` 1 例 + `ReliabilityFixTests` 7 例 + `TimezoneTests` 5 例；覆盖事务原子性、COMMIT 回滚、完成与 Played Outbox 同事务、权限拒绝/损坏/SQLITE_FULL/COMMIT 失败故障注入、120 轮重开库循环）
 > - **真实远程 D1 故障注入**：`bash scripts/fi-real-d1.sh <base_url> <api_token> <admin_token> <d1_name>`（隔离临时 Worker + 隔离临时 D1，**19/19 通过**，含 batch 中途 ABORT 整批回滚）
 > - **协议层断网恢复 soak**：`python3 scripts/soak_regression.py 300 12`（真实启停 Worker 制造 2 次中断，验证补拉补发）
 >
 > 若 SwiftPM 在受限环境下报 `sandbox-exec: sandbox_apply: Operation not permitted`，加 `--disable-sandbox`（仅关闭 SwiftPM 自身沙箱，不改变测试语义）。本机为 **Mac mini M4 / 16GB**。
 
 1. 在 macOS 执行 `bash mac/build-app.command`（或手动 `swift build -c release` 后打包），确认生成 `mac/dist/NotiVoice.app`。
-2. 部署 Worker 与 D1：全新库用 `schema.sql`（V1.1.3 基线，已含 FIX-04 触发器）；已有库依次跑 `migrations/001~004`，其中 **004 必须在启用新 Worker 前执行**，否则异载荷 `event_id` 不会被 409 拦截。本地复测可用 `npx wrangler d1 execute noti-voice --local --file=./migrations/004_ack_event_conflict_trigger.sql`。
+2. 部署 Worker 与 D1：全新库用 `schema.sql`（V1.1.4 基线，已含 FIX-04 触发器）；已有库依次跑 `migrations/001~004`，其中 **004 必须在启用新 Worker 前执行**，否则异载荷 `event_id` 不会被 409 拦截。本地复测可用 `npx wrangler d1 execute noti-voice --local --file=./migrations/004_ack_event_conflict_trigger.sql`。
 3. 配置**双 Token**（各填一个随机值，二者不同）：`wrangler secret put API_TOKEN`（业务接口，客户端用）、`wrangler secret put ADMIN_TOKEN`（后台 `/api/admin/*` 与 `/admin` 登录用）。**部署后必须 `wrangler secret list` 核对两个 secret 都在。**
 4. 首次启动客户端，确认菜单栏有波形图标（无 Dock 图标）；**启动自检**：未填 Token 显示橙色「待配置」，填错显示红色「Token 无效」，连接正常显示绿色「运行中 · 已连接」。
 5. 填写服务器地址、API Token、Fish Audio Key、模型与音色 ID，点击语音测试；确认能出声或正确降级系统语音。
@@ -39,10 +39,16 @@
 20. **持久层长循环**：`swift test --disable-sandbox --filter SoakTests`，120 轮重开库，断言 240 个 `event_id` 全不重复、无残留任务、未送达回执跨重启保留。
 21. **协议层 soak**：`python3 scripts/soak_regression.py 30 4` 先做短窗口自检，再跑 `300 12` 正式窗口。脚本真实启停本地 Worker，中断期间消息入待发队列，恢复后按原 `external_id` / `event_id` 补发；断言 `missing_after_recovery` 为空、待办清空、无 5xx、事件数 = 拉取数 × 2。
 
-## 发布阻断项（按 V1.1.3 实现更新）
+### 2026-11-12 时区统一验收（V1.1.4）
+
+22. **前端格式化**：`node scripts/test-timezone.mjs`，真实执行 `views/time.js`。期望 15/15，覆盖 UTC→北京时间、跨日、带偏移、历史空格格式、空值 / 非法值兜底，以及把时区换成 `UTC` / `America/New_York` 后输出随之变化（含夏令时动态偏移）。
+23. **两端对照**：后台提示条显示 `Asia/Shanghai（UTC+8）`，消息卡片「投递 / 接收 / 播放」时间与客户端播放记录一致；同时 `GET /api/admin/notifications` 原始 JSON 仍是带 `Z` 的 UTC。改 `TIMEZONE` 后必须 `npm run build`、`bash mac/build-app.command --no-open` 并重跑门禁，否则产物时区不一致会被拦下。
+24. **客户端**：`swift test --disable-sandbox --filter TimezoneTests`（5 例）；「设置 → 关于」显示「显示时区：Asia/Shanghai（UTC+8）」，「运行时间」页时区文案与之一致，诊断日志时间戳带时区标识。
+
+## 发布阻断项（按 V1.1.4 实现更新）
 
 **已完成并验证**：
-- Mac mini M4 本机编译与 `.app` 打包（v1.1.3，`CFBundleShortVersionString=1.1.3`）；`swift test --disable-sandbox` **28/28**（含 7 例审查缺陷回归 + 6 例物理故障注入 + 120 轮重开库 soak）。
+- Mac mini M4 本机编译与 `.app` 打包（v1.1.4，`CFBundleShortVersionString=1.1.4`）；`swift test --disable-sandbox` **33/33**（含 7 例审查缺陷回归 + 6 例物理故障注入 + 120 轮重开库 soak + 5 例时区）。
 - Worker 集成测试 `cloudflare/test-worker.sh` **21/21**（含 T19/T20/T21）。
 - 真实远程 D1 故障注入 `scripts/fi-real-d1.sh` **19/19**（隔离临时 Worker + 临时 D1，资源已清理；含 batch 中途 ABORT 整批回滚）。
 - 协议层 soak `python3 scripts/soak_regression.py 300 12`：**301.6 秒 / 2 次中断 / ALL PASS**（142 条创建 = 142 条补拉、284 个不重复 `event_id`、待办清零、0 个 5xx）。

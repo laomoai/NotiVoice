@@ -17,6 +17,10 @@ REPO="$PWD/.."
 if [ ! -f "$REPO/VERSION" ]; then echo "缺少 $REPO/VERSION（全仓唯一版本源）"; exit 1; fi
 APP_VERSION="$(tr -d '[:space:]' < "$REPO/VERSION")"
 if ! printf '%s' "$APP_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then echo "VERSION 格式不合法：${APP_VERSION}（应为 x.y.z）"; exit 1; fi
+# 显示时区唯一来源：根目录 TIMEZONE（跳过 # 注释与空行），与 Worker 页面共用同一份配置
+if [ ! -f "$REPO/TIMEZONE" ]; then echo "缺少 $REPO/TIMEZONE（全仓唯一显示时区源）"; exit 1; fi
+DISPLAY_TZ="$(awk '!/^[[:space:]]*(#|$)/ {gsub(/[[:space:]]/, ""); print; exit}' "$REPO/TIMEZONE")"
+if [ -z "$DISPLAY_TZ" ]; then echo "TIMEZONE 为空"; exit 1; fi
 BUILD_NUMBER="$(date -u +%Y%m%d%H%M)"
 GIT_COMMIT="$(git -C "$REPO" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME="$(date '+%Y-%m-%d %H:%M:%S %z')"
@@ -60,6 +64,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <key>NVBuildTime</key><string>${BUILD_TIME}</string>
 <key>NVBuildVariant</key><string>${VARIANT}</string>
 <key>NVGitDirty</key><string>${GIT_DIRTY}</string>
+<key>NVDisplayTimezone</key><string>${DISPLAY_TZ}</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><false/></dict>
@@ -70,5 +75,5 @@ chmod +x "$APP/Contents/MacOS/NotiVoice"
 LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [ -x "$LSREG" ]; then "$LSREG" -force -R -f "$APP" >/dev/null 2>&1 || true; fi
 echo "构建完成：${APP}（图标已注册刷新）"
-echo "版本 V${APP_VERSION} · build ${BUILD_NUMBER} · 标识 ${GIT_COMMIT} · ${VARIANT} · ${BUILD_TIME} · dirty=${GIT_DIRTY}"
+echo "版本 V${APP_VERSION} · build ${BUILD_NUMBER} · 标识 ${GIT_COMMIT} · ${VARIANT} · ${BUILD_TIME} · 时区 ${DISPLAY_TZ} · dirty=${GIT_DIRTY}"
 if [ "$NO_OPEN" -eq 0 ]; then open "$APP"; fi

@@ -1,6 +1,9 @@
 name = "noti-voice"
 main = "dist/worker.js"
 compatibility_date = "2026-10-01"
+# 该账号下有 Laomo / WeMore 两个可用账号；不写死 account_id 时非交互 deploy 会因「无法选择账号」失败，
+# 且有投错账号的风险。生产 D1 0fd35e88… 与自定义域名 notivoice.laomo.app 都属于此账号。
+account_id = "83b9ac0e5876f09e14098eb3984114af"
 # 加 routes 后 wrangler 默认关闭 workers.dev，显式保留作为备用入口
 workers_dev = true
 # 自定义域名：laomo.app 的权威 NS 在 Cloudflare，zone 归属同一账号
