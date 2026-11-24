@@ -187,10 +187,10 @@ export default {
         const ids = msgs.map(m => m.id);
         let receipts = {};
         if (ids.length) {
-          const marks = ids.map(() => '?').join(',');
+        // D1 单条查询最多绑定 100 个参数，后台列表最多有 200 个消息 ID。
           const { results: rcpts } = await env.DB.prepare(
-            `SELECT message_id,device_id,status,received_at,played_at FROM device_receipts WHERE message_id IN (${marks})`
-          ).bind(...ids).all();
+          'SELECT message_id,device_id,status,received_at,played_at FROM device_receipts WHERE message_id IN (SELECT value FROM json_each(?))'
+        ).bind(JSON.stringify(ids)).all();
           for (const r of rcpts) (receipts[r.message_id] ||= []).push(r);
         }
         return json({ messages: msgs.map(m => ({ ...m, receipts: receipts[m.id] || [] })) });
